@@ -1,0 +1,32 @@
+name = "pincer-gateway"
+main = "src/index.ts"
+compatibility_date = "2025-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+[durable_objects]
+bindings = [
+  { name = "CONVERSATION_DO", class_name = "ConversationDO" },
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ConversationDO"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pincer-db"
+database_id = "local"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "local"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "pincer-media"
+
+[ai]
+binding = "AI"
