@@ -1,17 +1,9 @@
 import { DurableObject } from 'cloudflare:workers';
+import { generateText, stepCountIs } from 'ai';
+import type { ModelMessage } from 'ai';
 import type { Env } from '../env.ts';
-import type { LLMMessage, LLMContentBlock } from '../llm/providers/types.ts';
-import type { ToolRegistryEntry } from '../llm/tool-registry.ts';
-import { callLLM } from '../llm/gateway.ts';
-import { buildToolList, getToolDefinitions } from '../llm/tool-registry.ts';
-import { executeTool, type ToolCallContext } from '../llm/tool-executor.ts';
-import {
-  userMessage,
-  assistantMessage,
-  toolResultMessage,
-  extractTextContent,
-  extractToolCalls,
-} from '../llm/message-formatter.ts';
+import { getModel, parseModelString } from '../llm/gateway.ts';
+import { buildToolSet, type ToolCallContext } from '../llm/tool-registry.ts';
 import { DEFAULTS } from '../config/defaults.ts';
 
 interface SessionState {
@@ -25,16 +17,16 @@ interface SessionState {
   userId: string;
 }
 
-const MAX_TOOL_LOOPS = 20;
+const MAX_TOOL_STEPS = 20;
 
 export class ConversationDO extends DurableObject<Env> {
-  private history: LLMMessage[] = [];
+  private history: ModelMessage[] = [];
   private state_: SessionState | null = null;
   private initialized = false;
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
-    this.history = (await this.ctx.storage.get<LLMMessage[]>('history')) ?? [];
+    this.history = (await this.ctx.storage.get<ModelMessage[]>('history')) ?? [];
     this.state_ = (await this.ctx.storage.get<SessionState>('metadata')) ?? null;
     this.initialized = true;
   }
@@ -96,72 +88,51 @@ export class ConversationDO extends DurableObject<Env> {
       };
     }
 
-    // Add user message
-    this.history.push(userMessage(body.text));
+    // Add user message to history
+    this.history.push({ role: 'user', content: body.text });
     this.state_.messageCount++;
 
     // Build tools
-    const tools = await buildToolList(this.env.DB, this.env.CACHE);
-    const toolDefs = getToolDefinitions(tools);
-
     const toolCtx: ToolCallContext = {
       env: this.env,
       sessionKey: body.sessionKey,
       userId: this.state_.userId,
     };
+    const tools = await buildToolSet(toolCtx);
 
-    // LLM loop
-    let loopCount = 0;
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
-    let finalModel = this.state_.model;
+    // Get the AI SDK model
+    const model = getModel(this.state_.model, this.env);
 
-    while (loopCount < MAX_TOOL_LOOPS) {
-      loopCount++;
+    // Build provider options for thinking
+    const providerOptions = buildProviderOptions(this.state_);
 
-      const response = await callLLM(this.env, {
-        model: this.state_.model,
-        messages: this.history,
-        systemPrompt: this.state_.systemPrompt,
-        tools: toolDefs.length > 0 ? toolDefs : undefined,
-        maxTokens: this.state_.maxTokens,
-        temperature: this.state_.temperature,
-        thinkingLevel: this.state_.thinkingLevel,
-      });
+    // Call generateText with automatic tool loop
+    const result = await generateText({
+      model,
+      system: this.state_.systemPrompt,
+      messages: this.history,
+      tools,
+      stopWhen: stepCountIs(MAX_TOOL_STEPS),
+      maxOutputTokens: this.state_.maxTokens,
+      temperature: this.state_.thinkingLevel !== 'none' ? undefined : this.state_.temperature,
+      providerOptions,
+    });
 
-      totalInputTokens += response.usage.inputTokens;
-      totalOutputTokens += response.usage.outputTokens;
-      finalModel = response.model;
+    // Append the generated messages to history
+    this.history.push(...result.response.messages);
+    this.state_.messageCount += result.response.messages.length;
 
-      // Add assistant response to history
-      this.history.push(assistantMessage(response.content));
-      this.state_.messageCount++;
-
-      // Check if we have tool calls
-      const toolCalls = extractToolCalls(response.content);
-
-      if (response.stopReason !== 'tool_use' || toolCalls.length === 0) {
-        // Done - extract text response
-        const text = extractTextContent(response.content);
-        await this.persist();
-
-        // Log usage
-        await this.logUsage(body.sessionKey, finalModel, totalInputTokens, totalOutputTokens);
-
-        return json({ text, toolCallCount: loopCount - 1 });
-      }
-
-      // Execute tool calls
-      for (const call of toolCalls) {
-        const result = await executeTool(call.name, call.input, tools, toolCtx);
-        this.history.push(toolResultMessage(call.id, result));
-        this.state_.messageCount++;
-      }
-    }
-
-    // Max loops hit
     await this.persist();
-    return json({ text: 'I reached the maximum number of tool calls. Please try again.', toolCallCount: loopCount });
+
+    // Log usage
+    const inputTokens = result.totalUsage.inputTokens ?? 0;
+    const outputTokens = result.totalUsage.outputTokens ?? 0;
+    await this.logUsage(body.sessionKey, this.state_.model, inputTokens, outputTokens);
+
+    const stepCount = result.response.messages.length;
+    const toolCallCount = result.toolCalls?.length ?? 0;
+
+    return json({ text: result.text, toolCallCount, steps: stepCount });
   }
 
   private async handleReset(): Promise<Response> {
@@ -182,20 +153,24 @@ export class ConversationDO extends DurableObject<Env> {
     const toSummarize = this.history.slice(0, -DEFAULTS.compactionKeepRecent);
 
     // Create a summary using the LLM
-    const summaryPrompt = `Summarize the following conversation history in a concise way, preserving key facts, decisions, and context that would be needed to continue the conversation:\n\n${toSummarize.map((m) => `[${m.role}]: ${typeof m.content === 'string' ? m.content : extractTextContent(m.content as LLMContentBlock[])}`).join('\n\n')}`;
+    const summaryPrompt = toSummarize
+      .map((m) => `[${m.role}]: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`)
+      .join('\n\n');
 
-    const summaryResponse = await callLLM(this.env, {
-      model: this.state_?.model ?? DEFAULTS.model,
-      messages: [userMessage(summaryPrompt)],
-      maxTokens: 2048,
+    const model = getModel(this.state_?.model ?? DEFAULTS.model, this.env);
+
+    const summaryResult = await generateText({
+      model,
+      system: 'Summarize the following conversation history in a concise way, preserving key facts, decisions, and context that would be needed to continue the conversation.',
+      prompt: summaryPrompt,
+      maxOutputTokens: 2048,
       temperature: 0.3,
     });
 
-    const summaryText = extractTextContent(summaryResponse.content);
-
     // Replace history with summary + recent messages
     this.history = [
-      { role: 'system', content: `[Previous conversation summary]: ${summaryText}` },
+      { role: 'user', content: '[Previous conversation summary]' },
+      { role: 'assistant', content: summaryResult.text },
       ...keepRecent,
     ];
 
@@ -228,7 +203,7 @@ export class ConversationDO extends DurableObject<Env> {
   }
 
   private async logUsage(sessionKey: string, model: string, inputTokens: number, outputTokens: number): Promise<void> {
-    const { provider } = parseModelForLogging(model);
+    const { provider } = parseModelString(model);
     try {
       await this.env.DB.prepare(
         'INSERT INTO usage_log (session_key, provider, model, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?)'
@@ -241,10 +216,22 @@ export class ConversationDO extends DurableObject<Env> {
   }
 }
 
-function parseModelForLogging(model: string): { provider: string; model: string } {
-  const slash = model.indexOf('/');
-  if (slash === -1) return { provider: 'unknown', model };
-  return { provider: model.slice(0, slash), model: model.slice(slash + 1) };
+function buildProviderOptions(state: SessionState) {
+  const { provider } = parseModelString(state.model);
+
+  if (provider === 'anthropic' && state.thinkingLevel && state.thinkingLevel !== 'none') {
+    const budgets: Record<string, number> = { low: 2048, medium: 8192, high: 32768 };
+    return {
+      anthropic: {
+        thinking: {
+          type: 'enabled' as const,
+          budgetTokens: budgets[state.thinkingLevel] ?? budgets.medium!,
+        },
+      },
+    };
+  }
+
+  return undefined;
 }
 
 function json(data: unknown, status = 200): Response {
