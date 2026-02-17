@@ -1,7 +1,12 @@
 import { tool, jsonSchema } from 'ai';
 import type { ToolSet } from 'ai';
 import type { Env } from '../env.ts';
+import type { MemoryScope, MemoryCategory } from '../memory/types.ts';
 import { executeLinkRead } from '../tools/builtin/link-read.ts';
+import { storeMemory, deleteMemory } from '../memory/store.ts';
+import { searchMemories, searchMultiScope } from '../memory/search.ts';
+import { embedText } from '../memory/embed.ts';
+import { resolveScopes } from '../memory/retrieve.ts';
 
 export interface ToolCallContext {
   env: Env;
@@ -11,8 +16,10 @@ export interface ToolCallContext {
 
 export async function buildToolSet(ctx: ToolCallContext): Promise<ToolSet> {
   const tools: ToolSet = {};
+  const agentId = extractAgentId(ctx.sessionKey);
 
-  // Built-in tools
+  // ─── Built-in tools ─────────────────────────────────────────
+
   tools.link_read = tool({
     description:
       'Fetches the content of a URL and returns the readable text. Use this to read web pages, articles, documentation, etc. when a user shares a link or you need to look something up.',
@@ -27,7 +34,144 @@ export async function buildToolSet(ctx: ToolCallContext): Promise<ToolSet> {
     execute: async (args: { url: string; max_length?: number }) => executeLinkRead(args),
   });
 
-  // Plugin tools from D1
+  // ─── Memory tools ───────────────────────────────────────────
+
+  tools.memory_save = tool({
+    description:
+      'Save a piece of information to long-term memory. Use this when the user explicitly asks you to remember something, or when important facts/preferences/instructions are shared that should persist across conversations.',
+    inputSchema: jsonSchema<{
+      content: string;
+      category?: string;
+      tags?: string[];
+    }>({
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'The information to remember' },
+        category: {
+          type: 'string',
+          enum: ['fact', 'preference', 'instruction', 'context', 'decision'],
+          description: 'Category of the memory (default: fact)',
+        },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional tags for categorization',
+        },
+      },
+      required: ['content'],
+    }),
+    execute: async (args: { content: string; category?: string; tags?: string[] }) => {
+      const isDM = ctx.sessionKey.includes(':direct:');
+      const scope: MemoryScope = isDM ? 'user' : 'group';
+      const scopeId = resolveScopeId(scope, ctx, agentId);
+
+      const result = await storeMemory(ctx.env, {
+        content: args.content,
+        scope,
+        scopeId,
+        category: (args.category as MemoryCategory) ?? 'fact',
+        tags: args.tags,
+        source: 'explicit',
+        sourceSessionKey: ctx.sessionKey,
+      });
+
+      if (result) {
+        return JSON.stringify({ saved: true, id: result.id, scope, content: result.content });
+      }
+      return JSON.stringify({ saved: false, reason: 'Duplicate memory already exists' });
+    },
+  });
+
+  tools.memory_search = tool({
+    description:
+      'Search long-term memories for relevant information. Use this when you need to look up something the user previously told you, or to find context from past conversations.',
+    inputSchema: jsonSchema<{ query: string; scope?: string }>({
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'What to search for' },
+        scope: {
+          type: 'string',
+          enum: ['user', 'group', 'agent'],
+          description: 'Limit search to a specific scope (optional)',
+        },
+      },
+      required: ['query'],
+    }),
+    execute: async (args: { query: string; scope?: string }) => {
+      if (args.scope) {
+        const scopeId = resolveScopeId(args.scope as MemoryScope, ctx, agentId);
+        const results = await searchMemories(ctx.env, args.query, {
+          scope: args.scope as MemoryScope,
+          scopeId,
+          topK: 10,
+        });
+        return JSON.stringify(results.map(formatSearchResult));
+      }
+
+      // Search all applicable scopes
+      const vector = await embedText(ctx.env, args.query);
+      const filters = resolveScopes({ sessionKey: ctx.sessionKey, userId: ctx.userId, agentId });
+      const results = await searchMultiScope(ctx.env, vector, filters);
+      return JSON.stringify(results.map(formatSearchResult));
+    },
+  });
+
+  tools.memory_list = tool({
+    description:
+      'List all memories in a given scope. Use this when the user asks "what do you remember about me?" or wants to see all stored memories.',
+    inputSchema: jsonSchema<{ scope?: string; limit?: number }>({
+      type: 'object',
+      properties: {
+        scope: {
+          type: 'string',
+          enum: ['user', 'group', 'agent'],
+          description: 'Which scope to list (default: user in DMs, group in groups)',
+        },
+        limit: { type: 'number', description: 'Maximum number of memories to return (default: 20)' },
+      },
+    }),
+    execute: async (args: { scope?: string; limit?: number }) => {
+      const isDM = ctx.sessionKey.includes(':direct:');
+      const scope = (args.scope as MemoryScope) ?? (isDM ? 'user' : 'group');
+      const scopeId = resolveScopeId(scope, ctx, agentId);
+      const limit = args.limit ?? 20;
+
+      const { results } = await ctx.env.DB.prepare(
+        'SELECT * FROM memory_entries WHERE scope = ? AND scope_id = ? AND superseded_by IS NULL ORDER BY created_at DESC LIMIT ?'
+      )
+        .bind(scope, scopeId, limit)
+        .all();
+
+      return JSON.stringify(
+        results.map((row) => ({
+          id: row.id,
+          content: row.content,
+          category: row.category,
+          source: row.source,
+          created_at: row.created_at,
+        }))
+      );
+    },
+  });
+
+  tools.memory_delete = tool({
+    description:
+      'Delete a specific memory by its ID. Use this when the user asks you to forget something specific.',
+    inputSchema: jsonSchema<{ id: string }>({
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The ID of the memory to delete' },
+      },
+      required: ['id'],
+    }),
+    execute: async (args: { id: string }) => {
+      const deleted = await deleteMemory(ctx.env, args.id);
+      return JSON.stringify({ deleted, id: args.id });
+    },
+  });
+
+  // ─── Plugin tools from D1 ──────────────────────────────────
+
   const { env } = ctx;
   const cached = await env.CACHE.get('tools:plugins', 'json') as PluginToolEntry[] | null;
   const pluginEntries = cached ?? await loadPluginTools(env);
@@ -42,6 +186,31 @@ export async function buildToolSet(ctx: ToolCallContext): Promise<ToolSet> {
   }
 
   return tools;
+}
+
+// ─── Memory helpers ─────────────────────────────────────────
+
+function extractAgentId(sessionKey: string): string {
+  const match = sessionKey.match(/^agent:([^:]+)/);
+  return match?.[1] ?? 'main';
+}
+
+function resolveScopeId(scope: MemoryScope, ctx: ToolCallContext, agentId: string): string {
+  switch (scope) {
+    case 'user': return ctx.userId;
+    case 'group': return ctx.sessionKey;
+    case 'agent': return agentId;
+  }
+}
+
+function formatSearchResult(m: { entry: { id: string; content: string; category: string | null; scope: string }; score: number }) {
+  return {
+    id: m.entry.id,
+    content: m.entry.content,
+    category: m.entry.category,
+    scope: m.entry.scope,
+    relevance: Math.round(m.score * 100) / 100,
+  };
 }
 
 // ─── Plugin tool helpers ────────────────────────────────────

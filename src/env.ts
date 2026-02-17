@@ -14,6 +14,9 @@ export interface Env {
   // Workers AI
   AI: Ai;
 
+  // Vectorize
+  MEMORY: VectorizeIndex;
+
   // Secrets - LLM providers
   ANTHROPIC_API_KEY: string;
   OPENAI_API_KEY?: string;

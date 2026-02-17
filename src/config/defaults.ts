@@ -8,4 +8,8 @@ export const DEFAULTS = {
   rateLimitPerMinute: 20,
   pairingCodeTtlSeconds: 300,
   systemPrompt: 'You are a helpful AI assistant.',
+  memoryRetrievalTopK: 10,
+  memoryDeduplicationThreshold: 0.9,
+  memoryAutoExtractEnabled: true,
+  memoryEmbeddingModel: '@cf/baai/bge-small-en-v1.5' as const,
 } as const;

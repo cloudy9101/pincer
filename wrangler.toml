@@ -30,3 +30,7 @@ bucket_name = "pincer-media"
 
 [ai]
 binding = "AI"
+
+[[vectorize]]
+binding = "MEMORY"
+index_name = "pincer-memory"

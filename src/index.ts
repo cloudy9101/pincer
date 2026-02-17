@@ -10,6 +10,7 @@ import { verifyAdminAuth } from './security/admin-auth.ts';
 import { getAgent, getConfigValue, setConfigValue } from './config/loader.ts';
 import { getMedia } from './media/store.ts';
 import { getCanonicalId } from './routing/identity-links.ts';
+import { deleteMemory } from './memory/store.ts';
 import { DEFAULTS } from './config/defaults.ts';
 import { log } from './utils/logger.ts';
 import type { IncomingMessage, OutgoingMessage } from './channels/types.ts';
@@ -567,6 +568,55 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     ).bind(since).all();
 
     return json({ days, usage: results });
+  }
+
+  // Memory
+  if (path === '/admin/memories/stats' && request.method === 'GET') {
+    const total = await env.DB.prepare(
+      'SELECT scope, COUNT(*) as count FROM memory_entries WHERE superseded_by IS NULL GROUP BY scope'
+    ).all();
+    const superseded = await env.DB.prepare(
+      'SELECT COUNT(*) as count FROM memory_entries WHERE superseded_by IS NOT NULL'
+    ).first();
+    return json({ active: total.results, superseded: (superseded?.count as number) ?? 0 });
+  }
+
+  if (path === '/admin/memories' && request.method === 'GET') {
+    const url = new URL(request.url);
+    const scope = url.searchParams.get('scope');
+    const scopeId = url.searchParams.get('scope_id');
+    const limit = parseInt(url.searchParams.get('limit') ?? '50');
+
+    let query = 'SELECT * FROM memory_entries WHERE superseded_by IS NULL';
+    const binds: unknown[] = [];
+
+    if (scope) {
+      query += ' AND scope = ?';
+      binds.push(scope);
+    }
+    if (scopeId) {
+      query += ' AND scope_id = ?';
+      binds.push(scopeId);
+    }
+
+    query += ' ORDER BY created_at DESC LIMIT ?';
+    binds.push(limit);
+
+    const { results } = await env.DB.prepare(query).bind(...binds).all();
+    return json(results);
+  }
+
+  if (path.match(/^\/admin\/memories\/[^/]+$/) && request.method === 'GET') {
+    const id = path.split('/').pop()!;
+    const row = await env.DB.prepare('SELECT * FROM memory_entries WHERE id = ?').bind(id).first();
+    if (!row) return json({ error: 'Not found' }, 404);
+    return json(row);
+  }
+
+  if (path.match(/^\/admin\/memories\/[^/]+$/) && request.method === 'DELETE') {
+    const id = path.split('/').pop()!;
+    const deleted = await deleteMemory(env, id);
+    return json({ ok: deleted });
   }
 
   return new Response('Not Found', { status: 404 });

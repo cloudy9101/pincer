@@ -5,6 +5,9 @@ import type { Env } from '../env.ts';
 import { getModel, parseModelString } from '../llm/gateway.ts';
 import { buildToolSet, type ToolCallContext } from '../llm/tool-registry.ts';
 import { DEFAULTS } from '../config/defaults.ts';
+import { retrieveMemories } from '../memory/retrieve.ts';
+import { extractAndStoreMemories } from '../memory/auto-extract.ts';
+import type { MemoryContext } from '../memory/types.ts';
 
 interface SessionState {
   agentId: string;
@@ -103,13 +106,27 @@ export class ConversationDO extends DurableObject<Env> {
     // Get the AI SDK model
     const model = getModel(this.state_.model, this.env);
 
+    // Build memory context
+    const memoryCtx: MemoryContext = {
+      sessionKey: body.sessionKey,
+      userId: this.state_.userId,
+      agentId: this.state_.agentId,
+    };
+
+    // Retrieve relevant memories and augment system prompt
+    let systemPrompt = this.state_.systemPrompt;
+    const memorySection = await retrieveMemories(this.env, body.text, memoryCtx);
+    if (memorySection) {
+      systemPrompt = systemPrompt + memorySection;
+    }
+
     // Build provider options for thinking
     const providerOptions = buildProviderOptions(this.state_);
 
     // Call generateText with automatic tool loop
     const result = await generateText({
       model,
-      system: this.state_.systemPrompt,
+      system: systemPrompt,
       messages: this.history,
       tools,
       stopWhen: stepCountIs(MAX_TOOL_STEPS),
@@ -128,6 +145,13 @@ export class ConversationDO extends DurableObject<Env> {
     const inputTokens = result.totalUsage.inputTokens ?? 0;
     const outputTokens = result.totalUsage.outputTokens ?? 0;
     await this.logUsage(body.sessionKey, this.state_.model, inputTokens, outputTokens);
+
+    // Auto-extract memories in background
+    if (DEFAULTS.memoryAutoExtractEnabled && result.text) {
+      this.ctx.waitUntil(
+        extractAndStoreMemories(this.env, model, body.text, result.text, memoryCtx)
+      );
+    }
 
     const stepCount = result.response.messages.length;
     const toolCallCount = result.toolCalls?.length ?? 0;
