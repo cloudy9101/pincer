@@ -18,11 +18,12 @@ new_classes = ["ConversationDO"]
 [[d1_databases]]
 binding = "DB"
 database_name = "pincer-db"
-database_id = "local"
+database_id = "233ae0e9-7d6a-4e96-989d-d25118917470"
+migrations_dir = "migrations"
 
 [[kv_namespaces]]
 binding = "CACHE"
-id = "local"
+id = "128c3204efa24e3a90a05d063804ac7d"
 
 [[r2_buckets]]
 binding = "MEDIA"
