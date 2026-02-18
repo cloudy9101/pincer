@@ -40,7 +40,7 @@ export async function retrieveMemories(
     const vector = await embedText(env, userMessage);
     const filters = resolveScopes(ctx);
     const memories = await searchMultiScope(env, vector, filters);
-    log('error', `MEMORIES ${memories} ${memories.length === 0}`)
+    log('info', 'Memory retrieval', { count: memories.length })
 
     if (memories.length === 0) return null;
 

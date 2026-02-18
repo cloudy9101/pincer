@@ -19,7 +19,7 @@ export async function searchByVector(
     filter: { scope: filter.scope, scope_id: filter.scopeId },
     returnMetadata: 'all',
   });
-  log('error', `RESULTS ${results}`)
+  log('info', 'Vectorize query results', { matchCount: results.matches.length })
 
   if (results.matches.length === 0) return [];
 

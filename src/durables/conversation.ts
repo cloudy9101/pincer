@@ -91,6 +91,10 @@ export class ConversationDO extends DurableObject<Env> {
       };
     }
 
+    // Migrate legacy state: backfill fields added after initial deployment
+    if (!this.state_.userId) this.state_.userId = body.userId;
+    if (!this.state_.agentId) this.state_.agentId = body.agentId;
+
     // Add user message to history
     this.history.push({ role: 'user', content: body.text });
     this.state_.messageCount++;
