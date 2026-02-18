@@ -13,6 +13,7 @@ import { getCanonicalId } from './routing/identity-links.ts';
 import { deleteMemory } from './memory/store.ts';
 import { DEFAULTS } from './config/defaults.ts';
 import { log } from './utils/logger.ts';
+import { installSkill, removeSkill, updateSkillSecrets, listSkillSecretKeys } from './skills/installer.ts';
 import type { IncomingMessage } from './channels/types.ts';
 
 export { ConversationSqlDO } from './durables/conversation.ts';
@@ -433,6 +434,51 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     const id = path.split('/').pop()!;
     const deleted = await deleteMemory(env, id);
     return json({ ok: deleted });
+  }
+
+  // Skills
+  if (path === '/admin/skills') {
+    if (request.method === 'GET') {
+      const { results } = await env.DB.prepare(
+        "SELECT name, display_name, description, auth_type, source_url, version, status, installed_at, updated_at FROM skills ORDER BY name"
+      ).all();
+      return json(results);
+    }
+    if (request.method === 'POST') {
+      const input = await request.json() as { content?: string; url?: string };
+      try {
+        const skill = await installSkill(env, input);
+        return json({ ok: true, name: skill.name, description: skill.description, authType: skill.authType });
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+    }
+  }
+
+  if (path.match(/^\/admin\/skills\/[^/]+\/secrets$/) && request.method === 'PUT') {
+    const skillName = decodeURIComponent(path.split('/')[3]!);
+    const secrets = await request.json() as Record<string, string>;
+    await updateSkillSecrets(env, skillName, secrets);
+    return json({ ok: true });
+  }
+
+  if (path.match(/^\/admin\/skills\/[^/]+\/secrets$/) && request.method === 'GET') {
+    const skillName = decodeURIComponent(path.split('/')[3]!);
+    const keys = await listSkillSecretKeys(env, skillName);
+    return json({ keys });
+  }
+
+  if (path.match(/^\/admin\/skills\/[^/]+$/) && request.method === 'GET') {
+    const skillName = decodeURIComponent(path.split('/').pop()!);
+    const row = await env.DB.prepare('SELECT * FROM skills WHERE name = ?').bind(skillName).first();
+    if (!row) return json({ error: 'Not found' }, 404);
+    return json(row);
+  }
+
+  if (path.match(/^\/admin\/skills\/[^/]+$/) && request.method === 'DELETE') {
+    const skillName = decodeURIComponent(path.split('/').pop()!);
+    const removed = await removeSkill(env, skillName);
+    return json({ ok: removed });
   }
 
   return new Response('Not Found', { status: 404 });

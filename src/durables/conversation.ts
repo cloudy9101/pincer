@@ -8,6 +8,8 @@ import { DEFAULTS } from '../config/defaults.ts';
 import { retrieveMemories } from '../memory/retrieve.ts';
 import { extractAndStoreMemories } from '../memory/auto-extract.ts';
 import type { MemoryContext } from '../memory/types.ts';
+import { loadActiveSkills } from '../skills/loader.ts';
+import { formatSkillsPrompt } from '../skills/prompt.ts';
 import { sendTelegramMessage } from '../channels/telegram/send.ts';
 import { getAgent } from '../config/loader.ts';
 import { getCanonicalId } from '../routing/identity-links.ts';
@@ -213,6 +215,12 @@ export class ConversationSqlDO extends DurableObject<Env> {
     const memorySection = await retrieveMemories(this.env, input.text, memoryCtx);
     if (memorySection) {
       systemPrompt = systemPrompt + memorySection;
+    }
+
+    const skills = await loadActiveSkills(this.env);
+    const skillsSection = await formatSkillsPrompt(skills, this.env);
+    if (skillsSection) {
+      systemPrompt = systemPrompt + skillsSection;
     }
 
     const providerOptions = buildProviderOptions(this.state_);

@@ -12,4 +12,6 @@ export const DEFAULTS = {
   memoryDeduplicationThreshold: 0.9,
   memoryAutoExtractEnabled: true,
   memoryEmbeddingModel: '@cf/baai/bge-small-en-v1.5' as const,
+  fetchMaxResponseBytes: 100_000,
+  fetchTimeoutMs: 30_000,
 } as const;

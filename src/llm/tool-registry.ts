@@ -7,6 +7,10 @@ import { storeMemory, deleteMemory } from '../memory/store.ts';
 import { searchMemories, searchMultiScope } from '../memory/search.ts';
 import { embedText } from '../memory/embed.ts';
 import { resolveScopes } from '../memory/retrieve.ts';
+import { DEFAULTS } from '../config/defaults.ts';
+import { applySkillAuth, getRequiredSecretKeys, type FetchRequestArgs } from '../skills/auth.ts';
+import { installSkill, removeSkill } from '../skills/installer.ts';
+import { loadActiveSkills } from '../skills/loader.ts';
 
 export interface ToolCallContext {
   env: Env;
@@ -167,6 +171,149 @@ export async function buildToolSet(ctx: ToolCallContext): Promise<ToolSet> {
     execute: async (args: { id: string }) => {
       const deleted = await deleteMemory(ctx.env, args.id);
       return JSON.stringify({ deleted, id: args.id });
+    },
+  });
+
+  // ─── Skill tools ──────────────────────────────────────────
+
+  tools.fetch = tool({
+    description:
+      'Make an HTTP request to an external API. If calling a skill\'s API, set the `skill` parameter to the skill name — authentication will be injected automatically. Do NOT include API keys or auth tokens manually.',
+    inputSchema: jsonSchema<{
+      url: string;
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string;
+      skill?: string;
+    }>({
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'The URL to fetch' },
+        method: { type: 'string', description: 'HTTP method (default: GET)', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
+        headers: {
+          type: 'object',
+          description: 'Request headers (do NOT include auth headers when using a skill)',
+          additionalProperties: { type: 'string' },
+        },
+        body: { type: 'string', description: 'Request body (for POST/PUT/PATCH)' },
+        skill: { type: 'string', description: 'Skill name for automatic auth injection' },
+      },
+      required: ['url'],
+    }),
+    execute: async (args: {
+      url: string;
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string;
+      skill?: string;
+    }) => {
+      const requestArgs: FetchRequestArgs = {
+        url: args.url,
+        method: args.method,
+        headers: { ...args.headers },
+        body: args.body,
+      };
+
+      // Inject auth if a skill is specified
+      if (args.skill) {
+        await applySkillAuth(args.skill, requestArgs, ctx.env);
+      }
+
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), DEFAULTS.fetchTimeoutMs);
+
+        const response = await fetch(requestArgs.url, {
+          method: requestArgs.method ?? 'GET',
+          headers: requestArgs.headers,
+          body: requestArgs.body,
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeout);
+
+        let responseBody = await response.text();
+        if (responseBody.length > DEFAULTS.fetchMaxResponseBytes) {
+          responseBody = responseBody.slice(0, DEFAULTS.fetchMaxResponseBytes) + '\n...[truncated]';
+        }
+
+        // Filter to useful response headers
+        const usefulHeaders: Record<string, string> = {};
+        const interestingHeaders = ['content-type', 'x-ratelimit-remaining', 'x-ratelimit-limit', 'x-ratelimit-reset', 'retry-after'];
+        for (const h of interestingHeaders) {
+          const val = response.headers.get(h);
+          if (val) usefulHeaders[h] = val;
+        }
+
+        return JSON.stringify({
+          status: response.status,
+          headers: usefulHeaders,
+          body: responseBody,
+        });
+      } catch (e) {
+        return JSON.stringify({ error: `Fetch failed: ${e instanceof Error ? e.message : String(e)}` });
+      }
+    },
+  });
+
+  tools.skill_install = tool({
+    description:
+      'Install a new skill from a URL pointing to a SKILL.md file. Returns the skill name and any required secret keys that need to be configured.',
+    inputSchema: jsonSchema<{ url: string }>({
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL to a SKILL.md file' },
+      },
+      required: ['url'],
+    }),
+    execute: async (args: { url: string }) => {
+      try {
+        const skill = await installSkill(ctx.env, { url: args.url });
+        const requiredSecrets = getRequiredSecretKeys(skill.authConfig);
+        return JSON.stringify({
+          installed: true,
+          name: skill.name,
+          description: skill.description,
+          authType: skill.authType,
+          requiredSecrets,
+        });
+      } catch (e) {
+        return JSON.stringify({ error: `Install failed: ${e instanceof Error ? e.message : String(e)}` });
+      }
+    },
+  });
+
+  tools.skill_remove = tool({
+    description: 'Remove an installed skill and its secrets.',
+    inputSchema: jsonSchema<{ name: string }>({
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The skill name to remove' },
+      },
+      required: ['name'],
+    }),
+    execute: async (args: { name: string }) => {
+      const removed = await removeSkill(ctx.env, args.name);
+      return JSON.stringify({ removed, name: args.name });
+    },
+  });
+
+  tools.skill_list = tool({
+    description: 'List all installed skills with their name, description, auth type, and status.',
+    inputSchema: jsonSchema<Record<string, never>>({
+      type: 'object',
+      properties: {},
+    }),
+    execute: async () => {
+      const skills = await loadActiveSkills(ctx.env);
+      return JSON.stringify(
+        skills.map(s => ({
+          name: s.name,
+          description: s.description,
+          authType: s.authType,
+          status: s.status,
+        }))
+      );
     },
   });
 
