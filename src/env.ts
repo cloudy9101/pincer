@@ -1,6 +1,8 @@
+import type { ConversationSqlDO } from './durables/conversation.ts';
+
 export interface Env {
   // Durable Objects
-  CONVERSATION_DO: DurableObjectNamespace;
+  CONVERSATION_DO: DurableObjectNamespace<ConversationSqlDO>;
 
   // D1 Database
   DB: D1Database;

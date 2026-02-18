@@ -7,13 +7,13 @@ import { buildSessionKeyFromMessage } from './routing/session-key.ts';
 import { isAllowed, checkAllowlistEmpty, addToAllowlist, createPairingCode, approvePairingCode, getAllowlist, removeFromAllowlist } from './security/allowlist.ts';
 import { checkRateLimit } from './security/rate-limit.ts';
 import { verifyAdminAuth } from './security/admin-auth.ts';
-import { getAgent, getConfigValue, setConfigValue } from './config/loader.ts';
+import { getAgent, setConfigValue } from './config/loader.ts';
 import { getMedia } from './media/store.ts';
 import { getCanonicalId } from './routing/identity-links.ts';
 import { deleteMemory } from './memory/store.ts';
 import { DEFAULTS } from './config/defaults.ts';
 import { log } from './utils/logger.ts';
-import type { IncomingMessage, OutgoingMessage } from './channels/types.ts';
+import type { IncomingMessage } from './channels/types.ts';
 
 export { ConversationSqlDO } from './durables/conversation.ts';
 
@@ -75,52 +75,51 @@ async function handleTelegramWebhook(request: Request, env: Env, ctx: ExecutionC
 
 async function processTelegramMessage(msg: IncomingMessage, env: Env): Promise<void> {
   try {
-    // Handle chat commands
-    if (msg.text.startsWith('/')) {
-      await handleChatCommand(msg, env);
-      return;
+    // Commands skip allowlist/rate-limit checks
+    const isCommand = msg.text.startsWith('/');
+
+    if (!isCommand) {
+      // Check allowlist
+      const allowlistEmpty = await checkAllowlistEmpty(env.DB);
+      const allowed = allowlistEmpty || await isAllowed(env.DB, msg.channel, msg.senderId);
+
+      if (!allowed) {
+        const code = await createPairingCode(env.DB, msg.channel, msg.senderId, msg.senderName);
+        await sendTelegramMessage(
+          {
+            channel: 'telegram',
+            chatId: msg.chatId,
+            text: `You're not on the allowlist. Your pairing code is: ${code}\nAsk the owner to approve it.`,
+            replyToMessageId: msg.channelMessageId,
+          },
+          env.TELEGRAM_BOT_TOKEN
+        );
+        return;
+      }
+
+      // Auto-add first user if allowlist is empty
+      if (allowlistEmpty) {
+        await addToAllowlist(env.DB, msg.channel, msg.senderId, msg.senderName);
+      }
+
+      // Rate limit
+      const rateCheck = await checkRateLimit(env.CACHE, msg.channel, msg.senderId);
+      if (!rateCheck.allowed) {
+        await sendTelegramMessage(
+          {
+            channel: 'telegram',
+            chatId: msg.chatId,
+            text: 'You are being rate limited. Please wait a moment.',
+            replyToMessageId: msg.channelMessageId,
+          },
+          env.TELEGRAM_BOT_TOKEN
+        );
+        return;
+      }
+
+      // Send typing indicator
+      await sendTelegramChatAction(msg.chatId, 'typing', env.TELEGRAM_BOT_TOKEN);
     }
-
-    // Check allowlist
-    const allowlistEmpty = await checkAllowlistEmpty(env.DB);
-    const allowed = allowlistEmpty || await isAllowed(env.DB, msg.channel, msg.senderId);
-
-    if (!allowed) {
-      const code = await createPairingCode(env.DB, msg.channel, msg.senderId, msg.senderName);
-      await sendTelegramMessage(
-        {
-          channel: 'telegram',
-          chatId: msg.chatId,
-          text: `You're not on the allowlist. Your pairing code is: ${code}\nAsk the owner to approve it.`,
-          replyToMessageId: msg.channelMessageId,
-        },
-        env.TELEGRAM_BOT_TOKEN
-      );
-      return;
-    }
-
-    // Auto-add first user if allowlist is empty
-    if (allowlistEmpty) {
-      await addToAllowlist(env.DB, msg.channel, msg.senderId, msg.senderName);
-    }
-
-    // Rate limit
-    const rateCheck = await checkRateLimit(env.CACHE, msg.channel, msg.senderId);
-    if (!rateCheck.allowed) {
-      await sendTelegramMessage(
-        {
-          channel: 'telegram',
-          chatId: msg.chatId,
-          text: 'You are being rate limited. Please wait a moment.',
-          replyToMessageId: msg.channelMessageId,
-        },
-        env.TELEGRAM_BOT_TOKEN
-      );
-      return;
-    }
-
-    // Send typing indicator
-    await sendTelegramChatAction(msg.chatId, 'typing', env.TELEGRAM_BOT_TOKEN);
 
     // Resolve route
     const route = await resolveRoute(env.DB, msg);
@@ -134,49 +133,31 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env): Promise<v
     const sessionKey = buildSessionKeyFromMessage(msg, route.agentId, route.accountId);
     const userId = await getCanonicalId(env.DB, msg.channel, msg.senderId);
 
-    // Route to ConversationDO
+    // Route to ConversationDO — handles both commands and regular messages
     const doId = env.CONVERSATION_DO.idFromName(sessionKey);
     const stub = env.CONVERSATION_DO.get(doId);
 
-    const doResponse = await stub.fetch(new Request('http://do/message', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: msg.text,
-        sessionKey,
-        agentId: route.agentId,
-        userId,
-        model: agent.model,
-        systemPrompt: agent.systemPrompt ?? DEFAULTS.systemPrompt,
-        thinkingLevel: agent.thinkingLevel ?? DEFAULTS.thinkingLevel,
-        temperature: agent.temperature,
-        maxTokens: agent.maxTokens,
-        replyTo: {
-          channel: msg.channel,
-          chatId: msg.chatId,
-          chatType: msg.chatType,
-          channelMessageId: msg.channelMessageId,
-        },
-      }),
-    }));
+    const result = await stub.message({
+      text: msg.text,
+      sessionKey,
+      agentId: route.agentId,
+      userId,
+      senderId: msg.senderId,
+      senderName: msg.senderName,
+      model: agent.model,
+      systemPrompt: agent.systemPrompt ?? DEFAULTS.systemPrompt,
+      thinkingLevel: agent.thinkingLevel ?? DEFAULTS.thinkingLevel,
+      temperature: agent.temperature,
+      maxTokens: agent.maxTokens,
+      replyTo: {
+        channel: msg.channel,
+        chatId: msg.chatId,
+        chatType: msg.chatType,
+        channelMessageId: msg.channelMessageId,
+      },
+    });
 
-    if (!doResponse.ok) {
-      const error = await doResponse.text();
-      log('error', 'ConversationDO error', { error, sessionKey });
-      await sendTelegramMessage(
-        {
-          channel: 'telegram',
-          chatId: msg.chatId,
-          text: 'Sorry, something went wrong processing your message.',
-          replyToMessageId: msg.channelMessageId,
-        },
-        env.TELEGRAM_BOT_TOKEN
-      );
-      return;
-    }
-
-    // DO sent the reply directly — check if it failed so we can retry from worker
-    const result = await doResponse.json() as { text: string; sent: boolean };
+    // DO sent the reply directly — fallback if it failed
     if (!result.sent && result.text) {
       await sendTelegramMessage(
         {
@@ -202,171 +183,6 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env): Promise<v
     } catch {
       // Best effort
     }
-  }
-}
-
-async function handleChatCommand(msg: IncomingMessage, env: Env): Promise<void> {
-  const parts = msg.text.split(/\s+/);
-  const command = parts[0]!.toLowerCase().replace(/@\w+$/, ''); // Strip bot mention suffix
-  const arg = parts.slice(1).join(' ').trim();
-
-  // Helper to send a reply
-  const reply = (text: string) =>
-    sendTelegramMessage({ channel: 'telegram', chatId: msg.chatId, text }, env.TELEGRAM_BOT_TOKEN);
-
-  // Helper to check allowlist
-  const ensureAllowed = async () =>
-    (await isAllowed(env.DB, msg.channel, msg.senderId)) || (await checkAllowlistEmpty(env.DB));
-
-  // Helper to get session DO stub
-  const getSessionStub = async () => {
-    const route = await resolveRoute(env.DB, msg);
-    const sessionKey = buildSessionKeyFromMessage(msg, route.agentId, route.accountId);
-    const doId = env.CONVERSATION_DO.idFromName(sessionKey);
-    return { stub: env.CONVERSATION_DO.get(doId), route, sessionKey };
-  };
-
-  switch (command) {
-    case '/start': {
-      await reply(`Hello ${msg.senderName}! I'm your AI assistant. Just send me a message to get started.\n\nType /help to see available commands.`);
-      break;
-    }
-
-    case '/help': {
-      await reply(
-        'Available commands:\n' +
-        '/help — Show this message\n' +
-        '/reset — Clear conversation history\n' +
-        '/compact — Summarize old messages to save context\n' +
-        '/model — Show current model\n' +
-        '/model <name> — Switch model (e.g. anthropic/claude-sonnet-4-20250514)\n' +
-        '/agent — Show current agent\n' +
-        '/agent <id> — Switch agent\n' +
-        '/whoami — Show your identity info\n' +
-        '/status — Show bot status'
-      );
-      break;
-    }
-
-    case '/reset': {
-      if (!(await ensureAllowed())) return;
-      const { stub } = await getSessionStub();
-      await stub.fetch(new Request('http://do/reset', { method: 'POST' }));
-      await reply('Conversation has been reset.');
-      break;
-    }
-
-    case '/compact': {
-      if (!(await ensureAllowed())) return;
-      const { stub } = await getSessionStub();
-      const res = await stub.fetch(new Request('http://do/compact', { method: 'POST' }));
-      const result = await res.json() as { ok: boolean; message?: string; summarizedMessages?: number; remainingMessages?: number };
-      if (result.message) {
-        await reply(result.message);
-      } else {
-        await reply(`Compacted: ${result.summarizedMessages} messages summarized, ${result.remainingMessages} remaining.`);
-      }
-      break;
-    }
-
-    case '/model': {
-      if (!(await ensureAllowed())) return;
-      const { stub, route } = await getSessionStub();
-
-      if (!arg) {
-        // Show current model
-        const metaRes = await stub.fetch(new Request('http://do/metadata'));
-        const meta = await metaRes.json() as { model?: string } | null;
-        const agent = await getAgent(env.DB, env.CACHE, route.agentId);
-        const currentModel = meta?.model ?? agent?.model ?? DEFAULTS.model;
-        await reply(`Current model: ${currentModel}`);
-      } else {
-        // Switch model
-        const res = await stub.fetch(new Request('http://do/configure', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: arg }),
-        }));
-        if (res.ok) {
-          await reply(`Model switched to: ${arg}`);
-        } else {
-          await reply('Failed to switch model. Is the session initialized?');
-        }
-      }
-      break;
-    }
-
-    case '/agent': {
-      if (!(await ensureAllowed())) return;
-
-      if (!arg) {
-        // Show current agent
-        const route = await resolveRoute(env.DB, msg);
-        const agent = await getAgent(env.DB, env.CACHE, route.agentId);
-        if (agent) {
-          await reply(
-            `Current agent: ${agent.id}\n` +
-            `Name: ${agent.displayName ?? '(none)'}\n` +
-            `Model: ${agent.model}\n` +
-            `Thinking: ${agent.thinkingLevel ?? 'none'}`
-          );
-        } else {
-          await reply(`Current agent: ${route.agentId} (not found in DB)`);
-        }
-      } else {
-        // Check if agent exists
-        const agent = await getAgent(env.DB, env.CACHE, arg);
-        if (!agent) {
-          // List available agents
-          const { results } = await env.DB.prepare('SELECT id, display_name FROM agents ORDER BY id').all();
-          const list = results.map(r => `  ${r.id}${r.display_name ? ` (${r.display_name})` : ''}`).join('\n');
-          await reply(`Agent "${arg}" not found. Available agents:\n${list}`);
-        } else {
-          await reply(
-            `Agent: ${agent.id}\n` +
-            `Name: ${agent.displayName ?? '(none)'}\n` +
-            `Model: ${agent.model}\n` +
-            `Thinking: ${agent.thinkingLevel ?? 'none'}\n\n` +
-            'Note: To route this chat to a different agent, use the admin API to update bindings.'
-          );
-        }
-      }
-      break;
-    }
-
-    case '/whoami': {
-      const canonicalId = await getCanonicalId(env.DB, msg.channel, msg.senderId);
-      const allowed = await isAllowed(env.DB, msg.channel, msg.senderId);
-      const route = await resolveRoute(env.DB, msg);
-      const sessionKey = buildSessionKeyFromMessage(msg, route.agentId, route.accountId);
-      await reply(
-        `Name: ${msg.senderName}\n` +
-        `Channel: ${msg.channel}\n` +
-        `Sender ID: ${msg.senderId}\n` +
-        `Canonical ID: ${canonicalId}\n` +
-        `Chat: ${msg.chatId} (${msg.chatType})\n` +
-        `Allowlisted: ${allowed ? 'yes' : 'no'}\n` +
-        `Session: ${sessionKey}`
-      );
-      break;
-    }
-
-    case '/status': {
-      const route = await resolveRoute(env.DB, msg);
-      const agent = await getAgent(env.DB, env.CACHE, route.agentId);
-      await reply(
-        `Pincer is running.\n` +
-        `Agent: ${route.agentId}${agent?.displayName ? ` (${agent.displayName})` : ''}\n` +
-        `Model: ${agent?.model ?? DEFAULTS.model}\n` +
-        `Channel: ${msg.channel}\n` +
-        `Chat: ${msg.chatId}`
-      );
-      break;
-    }
-
-    default:
-      // Ignore unknown commands
-      break;
   }
 }
 
@@ -525,26 +341,21 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
 
   if (path.match(/^\/admin\/sessions\/[^/]+\/history$/) && request.method === 'GET') {
     const sessionKey = decodeURIComponent(path.split('/')[3]!);
-    const doId = env.CONVERSATION_DO.idFromName(sessionKey);
-    const stub = env.CONVERSATION_DO.get(doId);
-    const response = await stub.fetch(new Request('http://do/history'));
-    return new Response(response.body, { headers: { 'Content-Type': 'application/json' } });
+    const stub = env.CONVERSATION_DO.get(env.CONVERSATION_DO.idFromName(sessionKey));
+    return json(await stub.getHistory());
   }
 
   if (path.match(/^\/admin\/sessions\/[^/]+\/reset$/) && request.method === 'POST') {
     const sessionKey = decodeURIComponent(path.split('/')[3]!);
-    const doId = env.CONVERSATION_DO.idFromName(sessionKey);
-    const stub = env.CONVERSATION_DO.get(doId);
-    await stub.fetch(new Request('http://do/reset', { method: 'POST' }));
+    const stub = env.CONVERSATION_DO.get(env.CONVERSATION_DO.idFromName(sessionKey));
+    await stub.reset();
     return json({ ok: true });
   }
 
   if (path.match(/^\/admin\/sessions\/[^/]+\/compact$/) && request.method === 'POST') {
     const sessionKey = decodeURIComponent(path.split('/')[3]!);
-    const doId = env.CONVERSATION_DO.idFromName(sessionKey);
-    const stub = env.CONVERSATION_DO.get(doId);
-    const response = await stub.fetch(new Request('http://do/compact', { method: 'POST' }));
-    return new Response(response.body, { headers: { 'Content-Type': 'application/json' } });
+    const stub = env.CONVERSATION_DO.get(env.CONVERSATION_DO.idFromName(sessionKey));
+    return json(await stub.compact());
   }
 
   // Config

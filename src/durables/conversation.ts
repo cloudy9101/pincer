@@ -9,12 +9,44 @@ import { retrieveMemories } from '../memory/retrieve.ts';
 import { extractAndStoreMemories } from '../memory/auto-extract.ts';
 import type { MemoryContext } from '../memory/types.ts';
 import { sendTelegramMessage } from '../channels/telegram/send.ts';
+import { getAgent } from '../config/loader.ts';
+import { getCanonicalId } from '../routing/identity-links.ts';
+import { isAllowed } from '../security/allowlist.ts';
 
-interface ReplyDestination {
+export interface ReplyDestination {
   channel: string;
   chatId: string;
   chatType: string;
   channelMessageId?: string;
+}
+
+export interface MessageInput {
+  text: string;
+  sessionKey: string;
+  agentId: string;
+  userId: string;
+  senderId: string;
+  senderName: string;
+  model?: string;
+  systemPrompt?: string;
+  thinkingLevel?: string;
+  temperature?: number;
+  maxTokens?: number;
+  replyTo: ReplyDestination;
+}
+
+export interface MessageResult {
+  text: string;
+  sent: boolean;
+  toolCallCount: number;
+  steps: number;
+}
+
+export interface CompactResult {
+  ok: boolean;
+  message?: string;
+  summarizedMessages?: number;
+  remainingMessages?: number;
 }
 
 interface SessionState {
@@ -28,10 +60,23 @@ interface SessionState {
   userId: string;
 }
 
+type SessionStateRow = {
+  agent_id: string;
+  user_id: string;
+  model: string;
+  system_prompt: string;
+  thinking_level: string;
+  temperature: number;
+  max_tokens: number;
+  message_count: number;
+};
+
 const MAX_TOOL_STEPS = 20;
 
 export class ConversationSqlDO extends DurableObject<Env> {
   private sql = this.ctx.storage.sql;
+  private history: ModelMessage[] = [];
+  private state_: SessionState | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -42,7 +87,6 @@ export class ConversationSqlDO extends DurableObject<Env> {
         data TEXT NOT NULL
       )
     `);
-
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS session_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -56,37 +100,27 @@ export class ConversationSqlDO extends DurableObject<Env> {
         message_count INTEGER NOT NULL DEFAULT 0
       )
     `);
-  }
 
-  private loadHistory(): ModelMessage[] {
-    const rows = this.sql.exec<{ data: string }>('SELECT data FROM messages ORDER BY idx').toArray();
-    return rows.map((row) => JSON.parse(row.data) as ModelMessage);
-  }
+    ctx.blockConcurrencyWhile(async () => {
+      this.history = this.sql.exec<{ data: string }>('SELECT data FROM messages ORDER BY idx')
+        .toArray()
+        .map((row) => JSON.parse(row.data) as ModelMessage);
 
-  private loadState(): SessionState | null {
-    const rows = this.sql.exec<{
-      agent_id: string;
-      user_id: string;
-      model: string;
-      system_prompt: string;
-      thinking_level: string;
-      temperature: number;
-      max_tokens: number;
-      message_count: number;
-    }>('SELECT * FROM session_state WHERE id = 1').toArray();
-
-    if (rows.length === 0) return null;
-    const row = rows[0]!;
-    return {
-      agentId: row.agent_id,
-      userId: row.user_id,
-      model: row.model,
-      systemPrompt: row.system_prompt,
-      thinkingLevel: row.thinking_level,
-      temperature: row.temperature,
-      maxTokens: row.max_tokens,
-      messageCount: row.message_count,
-    };
+      const rows = this.sql.exec<SessionStateRow>('SELECT * FROM session_state WHERE id = 1').toArray();
+      if (rows.length > 0) {
+        const r = rows[0]!;
+        this.state_ = {
+          agentId: r.agent_id,
+          userId: r.user_id,
+          model: r.model,
+          systemPrompt: r.system_prompt,
+          thinkingLevel: r.thinking_level,
+          temperature: r.temperature,
+          maxTokens: r.max_tokens,
+          messageCount: r.message_count,
+        };
+      }
+    });
   }
 
   private saveState(state: SessionState): void {
@@ -111,181 +145,145 @@ export class ConversationSqlDO extends DurableObject<Env> {
       state.maxTokens,
       state.messageCount,
     );
+    this.state_ = state;
   }
 
   private appendMessages(messages: ModelMessage[]): void {
     for (const msg of messages) {
       this.sql.exec('INSERT INTO messages (data) VALUES (?)', JSON.stringify(msg));
     }
+    this.history.push(...messages);
   }
 
-  override async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    const path = url.pathname;
+  // ─── RPC Methods ───────────────────────────────────────────
 
-    switch (path) {
-      case '/message':
-        if (request.method !== 'POST') return methodNotAllowed();
-        return this.handleMessage(request);
-      case '/reset':
-        if (request.method !== 'POST') return methodNotAllowed();
-        return this.handleReset();
-      case '/compact':
-        if (request.method !== 'POST') return methodNotAllowed();
-        return this.handleCompact();
-      case '/history':
-        if (request.method !== 'GET') return methodNotAllowed();
-        return json(this.loadHistory());
-      case '/metadata':
-        if (request.method !== 'GET') return methodNotAllowed();
-        return json(this.loadState());
-      case '/configure':
-        if (request.method !== 'PATCH') return methodNotAllowed();
-        return this.handleConfigure(request);
-      default:
-        return new Response('Not Found', { status: 404 });
+  async message(input: MessageInput): Promise<MessageResult> {
+    // Commands: handle and reply, no LLM
+    if (input.text.startsWith('/')) {
+      const reply = await this.handleCommand(input);
+      if (reply !== null) {
+        let sent = false;
+        try {
+          await this.sendReply(input.replyTo, reply);
+          sent = true;
+        } catch (e) {
+          console.error('Failed to send command reply:', e);
+        }
+        return { text: reply, sent, toolCallCount: 0, steps: 0 };
+      }
+      // Unknown command — ignore
+      return { text: '', sent: false, toolCallCount: 0, steps: 0 };
     }
-  }
 
-  private async handleMessage(request: Request): Promise<Response> {
-    const body = (await request.json()) as {
-      text: string;
-      sessionKey: string;
-      agentId: string;
-      userId: string;
-      model?: string;
-      systemPrompt?: string;
-      thinkingLevel?: string;
-      temperature?: number;
-      maxTokens?: number;
-      replyTo?: ReplyDestination;
-    };
-
-    // Initialize or load state
-    let state = this.loadState();
-    if (!state) {
-      state = {
-        agentId: body.agentId,
-        model: body.model ?? DEFAULTS.model,
-        systemPrompt: body.systemPrompt ?? DEFAULTS.systemPrompt,
-        thinkingLevel: body.thinkingLevel ?? DEFAULTS.thinkingLevel,
-        temperature: body.temperature ?? DEFAULTS.temperature,
-        maxTokens: body.maxTokens ?? DEFAULTS.maxTokens,
+    // Initialize state on first message
+    if (!this.state_) {
+      this.state_ = {
+        agentId: input.agentId,
+        model: input.model ?? DEFAULTS.model,
+        systemPrompt: input.systemPrompt ?? DEFAULTS.systemPrompt,
+        thinkingLevel: input.thinkingLevel ?? DEFAULTS.thinkingLevel,
+        temperature: input.temperature ?? DEFAULTS.temperature,
+        maxTokens: input.maxTokens ?? DEFAULTS.maxTokens,
         messageCount: 0,
-        userId: body.userId,
+        userId: input.userId,
       };
     }
 
     // Add user message
-    const userMsg: ModelMessage = { role: 'user', content: body.text };
-    this.appendMessages([userMsg]);
-    state.messageCount++;
-
-    // Load full history for LLM call
-    const history = this.loadHistory();
+    this.appendMessages([{ role: 'user', content: input.text }]);
+    this.state_.messageCount++;
 
     // Build tools
     const toolCtx: ToolCallContext = {
       env: this.env,
-      sessionKey: body.sessionKey,
-      userId: state.userId,
+      sessionKey: input.sessionKey,
+      userId: this.state_.userId,
     };
     const tools = await buildToolSet(toolCtx);
 
-    // Get the AI SDK model
-    const model = getModel(state.model, this.env);
+    const model = getModel(this.state_.model, this.env);
 
-    // Build memory context
     const memoryCtx: MemoryContext = {
-      sessionKey: body.sessionKey,
-      userId: state.userId,
-      agentId: state.agentId,
+      sessionKey: input.sessionKey,
+      userId: this.state_.userId,
+      agentId: this.state_.agentId,
     };
 
-    // Retrieve relevant memories and augment system prompt
-    let systemPrompt = state.systemPrompt;
-    const memorySection = await retrieveMemories(this.env, body.text, memoryCtx);
+    let systemPrompt = this.state_.systemPrompt;
+    const memorySection = await retrieveMemories(this.env, input.text, memoryCtx);
     if (memorySection) {
       systemPrompt = systemPrompt + memorySection;
     }
 
-    // Build provider options for thinking
-    const providerOptions = buildProviderOptions(state);
+    const providerOptions = buildProviderOptions(this.state_);
 
-    // Call generateText with automatic tool loop
     const result = await generateText({
       model,
       system: systemPrompt,
-      messages: history,
+      messages: this.history,
       tools,
       stopWhen: stepCountIs(MAX_TOOL_STEPS),
-      maxOutputTokens: state.maxTokens,
-      temperature: state.thinkingLevel !== 'none' ? undefined : state.temperature,
+      maxOutputTokens: this.state_.maxTokens,
+      temperature: this.state_.thinkingLevel !== 'none' ? undefined : this.state_.temperature,
       providerOptions,
     });
 
     const stepCount = result.response.messages.length;
     const toolCallCount = result.toolCalls?.length ?? 0;
 
-    // Send reply before persisting — user gets the message sooner
+    // Send reply before persisting
     let sent = false;
-    if (body.replyTo && result.text) {
+    if (result.text) {
       try {
-        await this.sendReply(body.replyTo, result.text);
+        await this.sendReply(input.replyTo, result.text);
         sent = true;
       } catch (e) {
         console.error('Failed to send reply:', e);
       }
     }
 
-    // Now persist history and state
+    // Persist
     this.appendMessages(result.response.messages);
-    state.messageCount += result.response.messages.length;
-    this.saveState(state);
+    this.state_.messageCount += result.response.messages.length;
+    this.saveState(this.state_);
 
-    // Log usage (D1, async)
     const inputTokens = result.totalUsage.inputTokens ?? 0;
     const outputTokens = result.totalUsage.outputTokens ?? 0;
-    await this.logUsage(body.sessionKey, state.model, inputTokens, outputTokens);
+    await this.logUsage(input.sessionKey, this.state_.model, inputTokens, outputTokens);
 
-    // Auto-extract memories in background
     if (DEFAULTS.memoryAutoExtractEnabled && result.text) {
       this.ctx.waitUntil(
-        extractAndStoreMemories(this.env, model, body.text, result.text, memoryCtx)
+        extractAndStoreMemories(this.env, model, input.text, result.text, memoryCtx)
       );
     }
 
-    return json({ text: result.text, sent, toolCallCount, steps: stepCount });
+    return { text: result.text, sent, toolCallCount, steps: stepCount };
   }
 
-  private handleReset(): Response {
+  async reset(): Promise<{ ok: boolean }> {
     this.sql.exec('DELETE FROM messages');
-    const state = this.loadState();
-    if (state) {
-      state.messageCount = 0;
-      this.saveState(state);
+    this.history = [];
+    if (this.state_) {
+      this.state_.messageCount = 0;
+      this.saveState(this.state_);
     }
-    return json({ ok: true });
+    return { ok: true };
   }
 
-  private async handleCompact(): Promise<Response> {
-    const history = this.loadHistory();
-
-    if (history.length < DEFAULTS.compactionThreshold) {
-      return json({ ok: true, message: 'No compaction needed' });
+  async compact(): Promise<CompactResult> {
+    if (this.history.length < DEFAULTS.compactionThreshold) {
+      return { ok: true, message: 'No compaction needed' };
     }
 
     const keepCount = DEFAULTS.compactionKeepRecent;
-    const toSummarize = history.slice(0, -keepCount);
-    const keepRecent = history.slice(-keepCount);
+    const toSummarize = this.history.slice(0, -keepCount);
+    const keepRecent = this.history.slice(-keepCount);
 
-    // Create a summary using the LLM
     const summaryPrompt = toSummarize
       .map((m) => `[${m.role}]: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`)
       .join('\n\n');
 
-    const state = this.loadState();
-    const model = getModel(state?.model ?? DEFAULTS.model, this.env);
+    const model = getModel(this.state_?.model ?? DEFAULTS.model, this.env);
 
     const summaryResult = await generateText({
       model,
@@ -295,8 +293,8 @@ export class ConversationSqlDO extends DurableObject<Env> {
       temperature: 0.3,
     });
 
-    // Replace all messages: delete old, insert summary + recent
     this.sql.exec('DELETE FROM messages');
+    this.history = [];
     const newHistory: ModelMessage[] = [
       { role: 'user', content: '[Previous conversation summary]' },
       { role: 'assistant', content: summaryResult.text },
@@ -304,30 +302,143 @@ export class ConversationSqlDO extends DurableObject<Env> {
     ];
     this.appendMessages(newHistory);
 
-    if (state) {
-      state.messageCount = newHistory.length;
-      this.saveState(state);
+    if (this.state_) {
+      this.state_.messageCount = newHistory.length;
+      this.saveState(this.state_);
     }
 
-    return json({ ok: true, summarizedMessages: toSummarize.length, remainingMessages: newHistory.length });
+    return { ok: true, summarizedMessages: toSummarize.length, remainingMessages: newHistory.length };
   }
 
-  private async handleConfigure(request: Request): Promise<Response> {
-    const updates = (await request.json()) as Partial<SessionState>;
-    const state = this.loadState();
+  async getHistory(): Promise<unknown[]> {
+    return this.history;
+  }
 
-    if (!state) {
-      return new Response('Session not initialized', { status: 400 });
+  async getMetadata(): Promise<SessionState | null> {
+    return this.state_;
+  }
+
+  async configure(updates: Partial<SessionState>): Promise<SessionState> {
+    if (!this.state_) {
+      throw new Error('Session not initialized');
     }
 
-    if (updates.model) state.model = updates.model;
-    if (updates.systemPrompt) state.systemPrompt = updates.systemPrompt;
-    if (updates.thinkingLevel) state.thinkingLevel = updates.thinkingLevel;
-    if (updates.temperature !== undefined) state.temperature = updates.temperature;
-    if (updates.maxTokens !== undefined) state.maxTokens = updates.maxTokens;
+    if (updates.model) this.state_.model = updates.model;
+    if (updates.systemPrompt) this.state_.systemPrompt = updates.systemPrompt;
+    if (updates.thinkingLevel) this.state_.thinkingLevel = updates.thinkingLevel;
+    if (updates.temperature !== undefined) this.state_.temperature = updates.temperature;
+    if (updates.maxTokens !== undefined) this.state_.maxTokens = updates.maxTokens;
 
-    this.saveState(state);
-    return json({ ok: true, state });
+    this.saveState(this.state_);
+    return this.state_;
+  }
+
+  // ─── Private helpers ───────────────────────────────────────
+
+  /** Handle a /command. Returns reply text, or null for unknown commands. */
+  private async handleCommand(input: MessageInput): Promise<string | null> {
+    const parts = input.text.split(/\s+/);
+    const cmd = parts[0]!.toLowerCase().replace(/@\w+$/, '');
+    const arg = parts.slice(1).join(' ').trim();
+
+    switch (cmd) {
+      case '/start':
+        return `Hello ${input.senderName}! I'm your AI assistant. Just send me a message to get started.\n\nType /help to see available commands.`;
+
+      case '/help':
+        return (
+          'Available commands:\n' +
+          '/help — Show this message\n' +
+          '/reset — Clear conversation history\n' +
+          '/compact — Summarize old messages to save context\n' +
+          '/model — Show current model\n' +
+          '/model <name> — Switch model (e.g. anthropic/claude-sonnet-4-20250514)\n' +
+          '/agent — Show current agent\n' +
+          '/agent <id> — Switch agent\n' +
+          '/whoami — Show your identity info\n' +
+          '/status — Show bot status'
+        );
+
+      case '/reset': {
+        await this.reset();
+        return 'Conversation has been reset.';
+      }
+
+      case '/compact': {
+        const result = await this.compact();
+        return result.message ?? `Compacted: ${result.summarizedMessages} messages summarized, ${result.remainingMessages} remaining.`;
+      }
+
+      case '/model': {
+        if (!arg) {
+          const agent = await getAgent(this.env.DB, this.env.CACHE, input.agentId);
+          const currentModel = this.state_?.model ?? agent?.model ?? DEFAULTS.model;
+          return `Current model: ${currentModel}`;
+        }
+        try {
+          await this.configure({ model: arg });
+          return `Model switched to: ${arg}`;
+        } catch {
+          return 'Failed to switch model. Is the session initialized?';
+        }
+      }
+
+      case '/agent': {
+        if (!arg) {
+          const agent = await getAgent(this.env.DB, this.env.CACHE, input.agentId);
+          if (agent) {
+            return (
+              `Current agent: ${agent.id}\n` +
+              `Name: ${agent.displayName ?? '(none)'}\n` +
+              `Model: ${agent.model}\n` +
+              `Thinking: ${agent.thinkingLevel ?? 'none'}`
+            );
+          }
+          return `Current agent: ${input.agentId} (not found in DB)`;
+        }
+        const agent = await getAgent(this.env.DB, this.env.CACHE, arg);
+        if (!agent) {
+          const { results } = await this.env.DB.prepare('SELECT id, display_name FROM agents ORDER BY id').all();
+          const list = results.map(r => `  ${r.id}${r.display_name ? ` (${r.display_name})` : ''}`).join('\n');
+          return `Agent "${arg}" not found. Available agents:\n${list}`;
+        }
+        return (
+          `Agent: ${agent.id}\n` +
+          `Name: ${agent.displayName ?? '(none)'}\n` +
+          `Model: ${agent.model}\n` +
+          `Thinking: ${agent.thinkingLevel ?? 'none'}\n\n` +
+          'Note: To route this chat to a different agent, use the admin API to update bindings.'
+        );
+      }
+
+      case '/whoami': {
+        const canonicalId = await getCanonicalId(this.env.DB, input.replyTo.channel, input.senderId);
+        const allowed = await isAllowed(this.env.DB, input.replyTo.channel, input.senderId);
+        return (
+          `Name: ${input.senderName}\n` +
+          `Channel: ${input.replyTo.channel}\n` +
+          `Sender ID: ${input.senderId}\n` +
+          `Canonical ID: ${canonicalId}\n` +
+          `Chat: ${input.replyTo.chatId} (${input.replyTo.chatType})\n` +
+          `Allowlisted: ${allowed ? 'yes' : 'no'}\n` +
+          `Session: ${input.sessionKey}`
+        );
+      }
+
+      case '/status': {
+        const agent = await getAgent(this.env.DB, this.env.CACHE, input.agentId);
+        return (
+          `Pincer is running.\n` +
+          `Agent: ${input.agentId}${agent?.displayName ? ` (${agent.displayName})` : ''}\n` +
+          `Model: ${agent?.model ?? DEFAULTS.model}\n` +
+          `Channel: ${input.replyTo.channel}\n` +
+          `Chat: ${input.replyTo.chatId}`
+        );
+      }
+
+      default:
+        return null;
+    }
   }
 
   private async sendReply(dest: ReplyDestination, text: string): Promise<void> {
@@ -378,15 +489,4 @@ function buildProviderOptions(state: SessionState) {
   }
 
   return undefined;
-}
-
-function json(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
-function methodNotAllowed(): Response {
-  return new Response('Method Not Allowed', { status: 405 });
 }
