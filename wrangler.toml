@@ -8,12 +8,17 @@ enabled = true
 
 [durable_objects]
 bindings = [
-  { name = "CONVERSATION_DO", class_name = "ConversationDO" },
+  { name = "CONVERSATION_DO", class_name = "ConversationSqlDO" },
 ]
 
 [[migrations]]
 tag = "v1"
 new_classes = ["ConversationDO"]
+
+[[migrations]]
+tag = "v2"
+deleted_classes = ["ConversationDO"]
+new_sqlite_classes = ["ConversationSqlDO"]
 
 [[d1_databases]]
 binding = "DB"

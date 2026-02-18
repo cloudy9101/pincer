@@ -15,7 +15,7 @@ import { DEFAULTS } from './config/defaults.ts';
 import { log } from './utils/logger.ts';
 import type { IncomingMessage, OutgoingMessage } from './channels/types.ts';
 
-export { ConversationDO } from './durables/conversation.ts';
+export { ConversationSqlDO } from './durables/conversation.ts';
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -151,6 +151,12 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env): Promise<v
         thinkingLevel: agent.thinkingLevel ?? DEFAULTS.thinkingLevel,
         temperature: agent.temperature,
         maxTokens: agent.maxTokens,
+        replyTo: {
+          channel: msg.channel,
+          chatId: msg.chatId,
+          chatType: msg.chatType,
+          channelMessageId: msg.channelMessageId,
+        },
       }),
     }));
 
@@ -169,10 +175,9 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env): Promise<v
       return;
     }
 
-    const result = await doResponse.json() as { text: string };
-
-    // Send response
-    if (result.text) {
+    // DO sent the reply directly — check if it failed so we can retry from worker
+    const result = await doResponse.json() as { text: string; sent: boolean };
+    if (!result.sent && result.text) {
       await sendTelegramMessage(
         {
           channel: 'telegram',
