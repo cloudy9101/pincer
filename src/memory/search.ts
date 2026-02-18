@@ -1,6 +1,7 @@
 import type { Env } from '../env.ts';
 import type { MemoryEntry, MemoryScope, ScoredMemory } from './types.ts';
 import { embedText } from './embed.ts';
+import { log } from '../utils/logger.ts'
 
 export interface SearchFilter {
   scope: MemoryScope;
@@ -18,6 +19,7 @@ export async function searchByVector(
     filter: { scope: filter.scope, scope_id: filter.scopeId },
     returnMetadata: 'all',
   });
+  log('error', `RESULTS ${results}`)
 
   if (results.matches.length === 0) return [];
 
