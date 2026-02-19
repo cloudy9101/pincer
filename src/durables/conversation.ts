@@ -462,6 +462,9 @@ export class ConversationSqlDO extends DurableObject<Env> {
           this.env.TELEGRAM_BOT_TOKEN,
         );
         break;
+      case 'discord':
+        // Discord replies handled by worker via interaction response edit
+        break;
       default:
         console.error(`Unknown reply channel: ${dest.channel}`);
     }

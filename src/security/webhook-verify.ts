@@ -1,4 +1,4 @@
-import { hmacSha256, bytesToHex } from '../utils/crypto.ts';
+import { hexToBytes } from '../utils/crypto.ts';
 
 export async function verifyTelegramWebhook(request: Request, secret: string): Promise<boolean> {
   const token = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
@@ -13,8 +13,8 @@ export async function verifyDiscordWebhook(request: Request, publicKey: string):
   const body = await request.clone().text();
   const message = new TextEncoder().encode(timestamp + body);
 
-  const sigBytes = new Uint8Array(signature.match(/.{2}/g)!.map(b => parseInt(b, 16)));
-  const keyBytes = new Uint8Array(publicKey.match(/.{2}/g)!.map(b => parseInt(b, 16)));
+  const sigBytes = hexToBytes(signature);
+  const keyBytes = hexToBytes(publicKey);
 
   const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'Ed25519', namedCurve: 'Ed25519' }, false, [
     'verify',

@@ -28,6 +28,11 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
 
+  // Secrets - Discord
+  DISCORD_PUBLIC_KEY: string;
+  DISCORD_BOT_TOKEN: string;
+  DISCORD_APP_ID: string;
+
   // Secrets - Security
   ENCRYPTION_KEY: string;
   ADMIN_AUTH_TOKEN: string;
