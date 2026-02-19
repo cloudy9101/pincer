@@ -11,6 +11,9 @@ import { DEFAULTS } from '../config/defaults.ts';
 import { applySkillAuth, getRequiredSecretKeys, type FetchRequestArgs } from '../skills/auth.ts';
 import { installSkill, removeSkill } from '../skills/installer.ts';
 import { loadActiveSkills } from '../skills/loader.ts';
+import { loadActiveMCPServers } from '../mcp/loader.ts';
+import { buildMCPTools } from '../mcp/client.ts';
+import { registerMCPServer, removeMCPServer } from '../mcp/installer.ts';
 
 export interface ToolCallContext {
   env: Env;
@@ -314,6 +317,89 @@ export async function buildToolSet(ctx: ToolCallContext): Promise<ToolSet> {
           status: s.status,
         }))
       );
+    },
+  });
+
+  // ─── MCP tools ─────────────────────────────────────────────
+
+  const mcpServers = await loadActiveMCPServers(ctx.env);
+  const mcpTools = buildMCPTools(mcpServers, ctx.env);
+  for (const [name, mcpTool] of Object.entries(mcpTools)) {
+    if (!(name in tools)) {
+      tools[name] = mcpTool;
+    }
+  }
+
+  tools.mcp_list = tool({
+    description: 'List all registered MCP servers with their tools.',
+    inputSchema: jsonSchema<Record<string, never>>({
+      type: 'object',
+      properties: {},
+    }),
+    execute: async () => {
+      const servers = await loadActiveMCPServers(ctx.env);
+      return JSON.stringify(
+        servers.map(s => ({
+          name: s.name,
+          description: s.description,
+          url: s.url,
+          transportType: s.transportType,
+          tools: s.toolSchemas?.map(t => t.name) ?? [],
+          status: s.status,
+        }))
+      );
+    },
+  });
+
+  tools.mcp_add = tool({
+    description:
+      'Register a new MCP server. Provide a name, URL, and optionally a transport type. Tools will be auto-discovered.',
+    inputSchema: jsonSchema<{
+      name: string;
+      url: string;
+      description?: string;
+      transport_type?: string;
+    }>({
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Unique name for this MCP server' },
+        url: { type: 'string', description: 'URL of the MCP server endpoint' },
+        description: { type: 'string', description: 'Optional description' },
+        transport_type: { type: 'string', description: 'Transport type: "sse" (default) or "http"', enum: ['sse', 'http'] },
+      },
+      required: ['name', 'url'],
+    }),
+    execute: async (args: { name: string; url: string; description?: string; transport_type?: string }) => {
+      try {
+        const server = await registerMCPServer(ctx.env, {
+          name: args.name,
+          url: args.url,
+          description: args.description,
+          transportType: (args.transport_type as 'sse' | 'http') ?? 'sse',
+        });
+        return JSON.stringify({
+          registered: true,
+          name: server.name,
+          tools: server.toolSchemas?.map(t => t.name) ?? [],
+        });
+      } catch (e) {
+        return JSON.stringify({ error: `Registration failed: ${e instanceof Error ? e.message : String(e)}` });
+      }
+    },
+  });
+
+  tools.mcp_remove = tool({
+    description: 'Remove a registered MCP server and all its tools.',
+    inputSchema: jsonSchema<{ name: string }>({
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The MCP server name to remove' },
+      },
+      required: ['name'],
+    }),
+    execute: async (args: { name: string }) => {
+      const removed = await removeMCPServer(ctx.env, args.name);
+      return JSON.stringify({ removed, name: args.name });
     },
   });
 

@@ -11,6 +11,7 @@ import type { MemoryContext } from '../memory/types.ts';
 import { loadActiveSkills } from '../skills/loader.ts';
 import { formatSkillsPrompt } from '../skills/prompt.ts';
 import { sendTelegramMessage } from '../channels/telegram/send.ts';
+import { editDiscordInteractionResponse } from '../channels/discord/send.ts';
 import { getAgent } from '../config/loader.ts';
 import { getCanonicalId } from '../routing/identity-links.ts';
 import { isAllowed } from '../security/allowlist.ts';
@@ -20,6 +21,7 @@ export interface ReplyDestination {
   chatId: string;
   chatType: string;
   channelMessageId?: string;
+  interactionToken?: string;
 }
 
 export interface MessageInput {
@@ -38,10 +40,9 @@ export interface MessageInput {
 }
 
 export interface MessageResult {
-  text: string;
-  sent: boolean;
-  toolCallCount: number;
-  steps: number;
+  accepted: boolean;
+  /** Only set for synchronous command responses */
+  text?: string;
 }
 
 export interface CompactResult {
@@ -160,21 +161,18 @@ export class ConversationSqlDO extends DurableObject<Env> {
   // ─── RPC Methods ───────────────────────────────────────────
 
   async message(input: MessageInput): Promise<MessageResult> {
-    // Commands: handle and reply, no LLM
+    // Commands are fast — handle synchronously
     if (input.text.startsWith('/')) {
       const reply = await this.handleCommand(input);
       if (reply !== null) {
-        let sent = false;
         try {
           await this.sendReply(input.replyTo, reply);
-          sent = true;
         } catch (e) {
           console.error('Failed to send command reply:', e);
         }
-        return { text: reply, sent, toolCallCount: 0, steps: 0 };
+        return { accepted: true, text: reply };
       }
-      // Unknown command — ignore
-      return { text: '', sent: false, toolCallCount: 0, steps: 0 };
+      return { accepted: true };
     }
 
     // Initialize state on first message
@@ -191,81 +189,97 @@ export class ConversationSqlDO extends DurableObject<Env> {
       };
     }
 
-    // Add user message
+    // Add user message, stash replyTo for the alarm
     this.appendMessages([{ role: 'user', content: input.text }]);
     this.state_.messageCount++;
-
-    // Build tools
-    const toolCtx: ToolCallContext = {
-      env: this.env,
-      sessionKey: input.sessionKey,
-      userId: this.state_.userId,
-    };
-    const tools = await buildToolSet(toolCtx);
-
-    const model = getModel(this.state_.model, this.env);
-
-    const memoryCtx: MemoryContext = {
-      sessionKey: input.sessionKey,
-      userId: this.state_.userId,
-      agentId: this.state_.agentId,
-    };
-
-    let systemPrompt = this.state_.systemPrompt;
-    const memorySection = await retrieveMemories(this.env, input.text, memoryCtx);
-    if (memorySection) {
-      systemPrompt = systemPrompt + memorySection;
-    }
-
-    const skills = await loadActiveSkills(this.env);
-    const skillsSection = await formatSkillsPrompt(skills, this.env);
-    if (skillsSection) {
-      systemPrompt = systemPrompt + skillsSection;
-    }
-
-    const providerOptions = buildProviderOptions(this.state_);
-
-    const result = await generateText({
-      model,
-      system: systemPrompt,
-      messages: this.history,
-      tools,
-      stopWhen: stepCountIs(MAX_TOOL_STEPS),
-      maxOutputTokens: this.state_.maxTokens,
-      temperature: this.state_.thinkingLevel !== 'none' ? undefined : this.state_.temperature,
-      providerOptions,
-    });
-
-    const stepCount = result.response.messages.length;
-    const toolCallCount = result.toolCalls?.length ?? 0;
-
-    // Send reply before persisting
-    let sent = false;
-    if (result.text) {
-      try {
-        await this.sendReply(input.replyTo, result.text);
-        sent = true;
-      } catch (e) {
-        console.error('Failed to send reply:', e);
-      }
-    }
-
-    // Persist
-    this.appendMessages(result.response.messages);
-    this.state_.messageCount += result.response.messages.length;
     this.saveState(this.state_);
 
-    const inputTokens = result.totalUsage.inputTokens ?? 0;
-    const outputTokens = result.totalUsage.outputTokens ?? 0;
-    await this.logUsage(input.sessionKey, this.state_.model, inputTokens, outputTokens);
+    await this.ctx.storage.put('pendingReplyTo', input.replyTo);
+    await this.ctx.storage.put('pendingSessionKey', input.sessionKey);
+    await this.ctx.storage.setAlarm(Date.now());
 
-    if (DEFAULTS.memoryAutoExtractEnabled && result.text) {
-      this.ctx.waitUntil(
-        extractAndStoreMemories(this.env, model, input.text, result.text, memoryCtx)
-      );
+    return { accepted: true };
+  }
+
+  override async alarm(): Promise<void> {
+    const replyTo = await this.ctx.storage.get<ReplyDestination>('pendingReplyTo');
+    const sessionKey = await this.ctx.storage.get<string>('pendingSessionKey');
+    await this.ctx.storage.delete('pendingReplyTo');
+    await this.ctx.storage.delete('pendingSessionKey');
+    if (!replyTo || !sessionKey || !this.state_) return;
+
+    // Extract the user's text from the last history message
+    const lastMsg = this.history[this.history.length - 1];
+    const userText = lastMsg && lastMsg.role === 'user' && typeof lastMsg.content === 'string'
+      ? lastMsg.content : '';
+
+    try {
+      const toolCtx: ToolCallContext = {
+        env: this.env,
+        sessionKey,
+        userId: this.state_.userId,
+      };
+      const tools = await buildToolSet(toolCtx);
+      const model = getModel(this.state_.model, this.env);
+
+      const memoryCtx: MemoryContext = {
+        sessionKey,
+        userId: this.state_.userId,
+        agentId: this.state_.agentId,
+      };
+
+      let systemPrompt = this.state_.systemPrompt;
+      const memorySection = await retrieveMemories(this.env, userText, memoryCtx);
+      if (memorySection) {
+        systemPrompt = systemPrompt + memorySection;
+      }
+
+      const skills = await loadActiveSkills(this.env);
+      const skillsSection = await formatSkillsPrompt(skills, this.env);
+      if (skillsSection) {
+        systemPrompt = systemPrompt + skillsSection;
+      }
+
+      const providerOptions = buildProviderOptions(this.state_);
+
+      const result = await generateText({
+        model,
+        system: systemPrompt,
+        messages: this.history,
+        tools,
+        stopWhen: stepCountIs(MAX_TOOL_STEPS),
+        maxOutputTokens: this.state_.maxTokens,
+        temperature: this.state_.thinkingLevel !== 'none' ? undefined : this.state_.temperature,
+        providerOptions,
+      });
+
+      // Send reply
+      if (result.text) {
+        try {
+          await this.sendReply(replyTo, result.text);
+        } catch (e) {
+          console.error('Failed to send reply:', e);
+        }
+      }
+
+      // Persist
+      this.appendMessages(result.response.messages);
+      this.state_.messageCount += result.response.messages.length;
+      this.saveState(this.state_);
+
+      const inputTokens = result.totalUsage.inputTokens ?? 0;
+      const outputTokens = result.totalUsage.outputTokens ?? 0;
+      await this.logUsage(sessionKey, this.state_.model, inputTokens, outputTokens);
+
+      if (DEFAULTS.memoryAutoExtractEnabled && result.text) {
+        await extractAndStoreMemories(this.env, model, userText, result.text, memoryCtx);
+      }
+    } catch (e) {
+      console.error('alarm processMessage failed:', e);
+      try {
+        await this.sendReply(replyTo, 'An error occurred while processing your message. Please try again.');
+      } catch { /* best effort */ }
     }
-
-    return { text: result.text, sent, toolCallCount, steps: stepCount };
   }
 
   async reset(): Promise<{ ok: boolean }> {
@@ -463,7 +477,14 @@ export class ConversationSqlDO extends DurableObject<Env> {
         );
         break;
       case 'discord':
-        // Discord replies handled by worker via interaction response edit
+        if (dest.interactionToken) {
+          await editDiscordInteractionResponse(
+            this.env.DISCORD_APP_ID,
+            dest.interactionToken,
+            text,
+            this.env.DISCORD_BOT_TOKEN,
+          );
+        }
         break;
       default:
         console.error(`Unknown reply channel: ${dest.channel}`);

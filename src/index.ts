@@ -18,6 +18,9 @@ import { deleteMemory } from './memory/store.ts';
 import { DEFAULTS } from './config/defaults.ts';
 import { log } from './utils/logger.ts';
 import { installSkill, removeSkill, updateSkillSecrets, listSkillSecretKeys } from './skills/installer.ts';
+import { registerMCPServer, removeMCPServer, updateMCPServer, updateMCPServerHeaders, listMCPServerHeaderKeys } from './mcp/installer.ts';
+import { getMCPServer } from './mcp/loader.ts';
+import { discoverMCPTools } from './mcp/client.ts';
 import type { IncomingMessage } from './channels/types.ts';
 
 export { ConversationSqlDO } from './durables/conversation.ts';
@@ -145,7 +148,8 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env): Promise<v
     const doId = env.CONVERSATION_DO.idFromName(sessionKey);
     const stub = env.CONVERSATION_DO.get(doId);
 
-    const result = await stub.message({
+    // DO sends the reply directly — await ensures RPC is dispatched
+    await stub.message({
       text: msg.text,
       sessionKey,
       agentId: route.agentId,
@@ -164,19 +168,6 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env): Promise<v
         channelMessageId: msg.channelMessageId,
       },
     });
-
-    // DO sent the reply directly — fallback if it failed
-    if (!result.sent && result.text) {
-      await sendTelegramMessage(
-        {
-          channel: 'telegram',
-          chatId: msg.chatId,
-          text: result.text,
-          replyToMessageId: msg.chatType === 'group' ? msg.channelMessageId : undefined,
-        },
-        env.TELEGRAM_BOT_TOKEN
-      );
-    }
   } catch (error) {
     log('error', 'Error processing message', { error: String(error), senderId: msg.senderId });
     try {
@@ -285,7 +276,8 @@ async function processDiscordInteraction(interaction: DiscordInteraction, env: E
     const doId = env.CONVERSATION_DO.idFromName(sessionKey);
     const stub = env.CONVERSATION_DO.get(doId);
 
-    const result = await stub.message({
+    // DO sends the Discord reply directly — await ensures RPC is dispatched
+    await stub.message({
       text: msg.text,
       sessionKey,
       agentId: route.agentId,
@@ -302,19 +294,9 @@ async function processDiscordInteraction(interaction: DiscordInteraction, env: E
         chatId: msg.chatId,
         chatType: msg.chatType,
         channelMessageId: msg.channelMessageId,
+        interactionToken: interaction.token,
       },
     });
-
-    // DO does not send for Discord — we always edit the deferred response
-    if (result.text) {
-      await editDiscordInteractionResponse(
-        env.DISCORD_APP_ID, interaction.token, result.text, env.DISCORD_BOT_TOKEN,
-      );
-    } else {
-      await editDiscordInteractionResponse(
-        env.DISCORD_APP_ID, interaction.token, '(No response)', env.DISCORD_BOT_TOKEN,
-      );
-    }
   } catch (error) {
     log('error', 'Error processing Discord interaction', { error: String(error), senderId: msg.senderId });
     try {
@@ -628,6 +610,91 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
   if (path.match(/^\/admin\/skills\/[^/]+$/) && request.method === 'DELETE') {
     const skillName = decodeURIComponent(path.split('/').pop()!);
     const removed = await removeSkill(env, skillName);
+    return json({ ok: removed });
+  }
+
+  // MCP Servers
+  if (path === '/admin/mcp') {
+    if (request.method === 'GET') {
+      const { results } = await env.DB.prepare(
+        "SELECT name, display_name, description, url, transport_type, tool_schemas, tool_whitelist, status, discovered_at, created_at, updated_at FROM mcp_servers ORDER BY name"
+      ).all();
+      return json(results.map(r => ({
+        ...r,
+        tool_schemas: r.tool_schemas ? JSON.parse(r.tool_schemas as string) : null,
+        tool_whitelist: r.tool_whitelist ? JSON.parse(r.tool_whitelist as string) : null,
+      })));
+    }
+    if (request.method === 'POST') {
+      const input = await request.json() as {
+        name: string;
+        url: string;
+        displayName?: string;
+        description?: string;
+        transportType?: 'sse' | 'http';
+        toolWhitelist?: string[];
+      };
+      try {
+        const server = await registerMCPServer(env, input);
+        return json({
+          ok: true,
+          name: server.name,
+          url: server.url,
+          tools: server.toolSchemas?.map(t => t.name) ?? [],
+        });
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+    }
+  }
+
+  if (path.match(/^\/admin\/mcp\/[^/]+\/headers$/) && request.method === 'PUT') {
+    const serverName = decodeURIComponent(path.split('/')[3]!);
+    const headers = await request.json() as Record<string, string>;
+    await updateMCPServerHeaders(env, serverName, headers);
+    return json({ ok: true });
+  }
+
+  if (path.match(/^\/admin\/mcp\/[^/]+\/headers$/) && request.method === 'GET') {
+    const serverName = decodeURIComponent(path.split('/')[3]!);
+    const keys = await listMCPServerHeaderKeys(env, serverName);
+    return json({ keys });
+  }
+
+  if (path.match(/^\/admin\/mcp\/[^/]+\/discover$/) && request.method === 'POST') {
+    const serverName = decodeURIComponent(path.split('/')[3]!);
+    try {
+      const schemas = await discoverMCPTools(env, serverName);
+      return json({ ok: true, tools: schemas });
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  }
+
+  if (path.match(/^\/admin\/mcp\/[^/]+$/) && request.method === 'GET') {
+    const serverName = decodeURIComponent(path.split('/').pop()!);
+    const server = await getMCPServer(env, serverName);
+    if (!server) return json({ error: 'Not found' }, 404);
+    return json(server);
+  }
+
+  if (path.match(/^\/admin\/mcp\/[^/]+$/) && request.method === 'PATCH') {
+    const serverName = decodeURIComponent(path.split('/').pop()!);
+    const updates = await request.json() as Record<string, unknown>;
+    const updated = await updateMCPServer(env, serverName, {
+      url: updates.url as string | undefined,
+      displayName: updates.displayName as string | undefined,
+      description: updates.description as string | undefined,
+      transportType: updates.transportType as 'sse' | 'http' | undefined,
+      toolWhitelist: updates.toolWhitelist as string[] | undefined,
+      status: updates.status as string | undefined,
+    });
+    return json({ ok: updated });
+  }
+
+  if (path.match(/^\/admin\/mcp\/[^/]+$/) && request.method === 'DELETE') {
+    const serverName = decodeURIComponent(path.split('/').pop()!);
+    const removed = await removeMCPServer(env, serverName);
     return json({ ok: removed });
   }
 
