@@ -14,6 +14,9 @@ import { loadActiveSkills } from '../skills/loader.ts';
 import { loadActiveMCPServers } from '../mcp/loader.ts';
 import { buildMCPTools } from '../mcp/client.ts';
 import { registerMCPServer, removeMCPServer } from '../mcp/installer.ts';
+import { getAgent } from '../config/loader.ts';
+import { buildDelegateSessionKey } from '../routing/session-key.ts';
+import type { TaskInput } from '../durables/conversation.ts';
 
 export interface ToolCallContext {
   env: Env;
@@ -400,6 +403,61 @@ export async function buildToolSet(ctx: ToolCallContext): Promise<ToolSet> {
     execute: async (args: { name: string }) => {
       const removed = await removeMCPServer(ctx.env, args.name);
       return JSON.stringify({ removed, name: args.name });
+    },
+  });
+
+  // ─── Delegate tool ──────────────────────────────────────────
+
+  tools.delegate = tool({
+    description:
+      'Delegate a task to a sub-agent that runs independently and returns its result. Use this to break complex work into sub-tasks (e.g. research + analysis, multi-source aggregation). The sub-agent has access to all tools (fetch, memory, MCP, skills) but runs in a fresh, ephemeral conversation. You can call delegate multiple times in parallel for fan-out work, then synthesize the results.',
+    inputSchema: jsonSchema<{
+      task: string;
+      agent_id?: string;
+      context?: string;
+    }>({
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'The task description for the sub-agent to complete' },
+        agent_id: { type: 'string', description: 'Agent ID to use (defaults to the current agent)' },
+        context: { type: 'string', description: 'Additional context to prepend to the task' },
+      },
+      required: ['task'],
+    }),
+    execute: async (args: { task: string; agent_id?: string; context?: string }) => {
+      try {
+        const targetAgentId = args.agent_id ?? agentId;
+        const agent = await getAgent(ctx.env.DB, ctx.env.CACHE, targetAgentId);
+
+        const delegateSessionKey = buildDelegateSessionKey(ctx.sessionKey);
+        const doId = ctx.env.CONVERSATION_DO.idFromName(delegateSessionKey);
+        const stub = ctx.env.CONVERSATION_DO.get(doId);
+
+        const taskText = args.context
+          ? `Context: ${args.context}\n\nTask: ${args.task}`
+          : args.task;
+
+        const taskInput: TaskInput = {
+          text: taskText,
+          agentId: targetAgentId,
+          userId: ctx.userId,
+          sessionKey: delegateSessionKey,
+          model: agent?.model,
+          systemPrompt: agent?.systemPrompt ?? undefined,
+          thinkingLevel: agent?.thinkingLevel ?? undefined,
+          temperature: agent?.temperature,
+          maxTokens: agent?.maxTokens,
+        };
+
+        const result = await stub.runTask(taskInput);
+        return JSON.stringify({
+          text: result.text,
+          toolCallCount: result.toolCallCount,
+          agent: targetAgentId,
+        });
+      } catch (e) {
+        return JSON.stringify({ error: `Delegation failed: ${e instanceof Error ? e.message : String(e)}` });
+      }
     },
   });
 

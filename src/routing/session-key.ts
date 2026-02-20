@@ -40,3 +40,7 @@ export function buildSessionKeyFromMessage(msg: IncomingMessage, agentId: string
     accountId,
   });
 }
+
+export function buildDelegateSessionKey(parentSessionKey: string): string {
+  return `delegate:${parentSessionKey}:${crypto.randomUUID()}`;
+}

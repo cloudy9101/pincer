@@ -10,7 +10,7 @@ import { extractAndStoreMemories } from '../memory/auto-extract.ts';
 import type { MemoryContext } from '../memory/types.ts';
 import { loadActiveSkills } from '../skills/loader.ts';
 import { formatSkillsPrompt } from '../skills/prompt.ts';
-import { sendTelegramMessage } from '../channels/telegram/send.ts';
+import { sendTelegramMessage, sendTelegramChatAction } from '../channels/telegram/send.ts';
 import { editDiscordInteractionResponse } from '../channels/discord/send.ts';
 import { getAgent } from '../config/loader.ts';
 import { getCanonicalId } from '../routing/identity-links.ts';
@@ -43,6 +43,23 @@ export interface MessageResult {
   accepted: boolean;
   /** Only set for synchronous command responses */
   text?: string;
+}
+
+export interface TaskInput {
+  text: string;
+  agentId: string;
+  userId: string;
+  sessionKey: string;
+  model?: string;
+  systemPrompt?: string;
+  thinkingLevel?: string;
+  temperature?: number;
+  maxTokens?: number;
+}
+
+export interface TaskResult {
+  text: string;
+  toolCallCount: number;
 }
 
 export interface CompactResult {
@@ -201,6 +218,84 @@ export class ConversationSqlDO extends DurableObject<Env> {
     return { accepted: true };
   }
 
+  async runTask(input: TaskInput): Promise<TaskResult> {
+    const agentId = input.agentId;
+    const model = input.model ?? DEFAULTS.model;
+    const systemPromptBase = input.systemPrompt ?? DEFAULTS.systemPrompt;
+    const thinkingLevel = input.thinkingLevel ?? DEFAULTS.thinkingLevel;
+    const temperature = input.temperature ?? DEFAULTS.temperature;
+    const maxTokens = input.maxTokens ?? DEFAULTS.maxTokens;
+
+    const toolCtx: ToolCallContext = {
+      env: this.env,
+      sessionKey: input.sessionKey,
+      userId: input.userId,
+    };
+    const tools = await buildToolSet(toolCtx);
+    const llmModel = getModel(model, this.env);
+
+    // Build system prompt with memories and skills
+    let systemPrompt = systemPromptBase;
+
+    const memoryCtx: MemoryContext = {
+      sessionKey: input.sessionKey,
+      userId: input.userId,
+      agentId,
+    };
+    const memorySection = await retrieveMemories(this.env, input.text, memoryCtx);
+    if (memorySection) {
+      systemPrompt = systemPrompt + memorySection;
+    }
+
+    const skills = await loadActiveSkills(this.env);
+    const skillsSection = await formatSkillsPrompt(skills, this.env);
+    if (skillsSection) {
+      systemPrompt = systemPrompt + skillsSection;
+    }
+
+    const sessionState: SessionState = {
+      agentId,
+      userId: input.userId,
+      model,
+      systemPrompt: systemPromptBase,
+      thinkingLevel,
+      temperature,
+      maxTokens,
+      messageCount: 0,
+    };
+    const providerOptions = buildProviderOptions(sessionState);
+
+    const result = await generateText({
+      model: llmModel,
+      system: systemPrompt,
+      messages: [{ role: 'user' as const, content: input.text }],
+      tools,
+      stopWhen: stepCountIs(MAX_TOOL_STEPS),
+      maxOutputTokens: maxTokens,
+      temperature: thinkingLevel !== 'none' ? undefined : temperature,
+      providerOptions,
+    });
+
+    // Count tool calls across all steps
+    let toolCallCount = 0;
+    for (const msg of result.response.messages) {
+      if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (typeof part === 'object' && 'type' in part && part.type === 'tool-call') {
+            toolCallCount++;
+          }
+        }
+      }
+    }
+
+    // Log usage but don't persist history (ephemeral)
+    const inputTokens = result.totalUsage.inputTokens ?? 0;
+    const outputTokens = result.totalUsage.outputTokens ?? 0;
+    await this.logUsage(input.sessionKey, model, inputTokens, outputTokens);
+
+    return { text: result.text, toolCallCount };
+  }
+
   override async alarm(): Promise<void> {
     const replyTo = await this.ctx.storage.get<ReplyDestination>('pendingReplyTo');
     const sessionKey = await this.ctx.storage.get<string>('pendingSessionKey');
@@ -212,6 +307,9 @@ export class ConversationSqlDO extends DurableObject<Env> {
     const lastMsg = this.history[this.history.length - 1];
     const userText = lastMsg && lastMsg.role === 'user' && typeof lastMsg.content === 'string'
       ? lastMsg.content : '';
+
+    // Start typing indicator for Telegram
+    const typingInterval = this.startTypingIndicator(replyTo);
 
     try {
       const toolCtx: ToolCallContext = {
@@ -253,6 +351,8 @@ export class ConversationSqlDO extends DurableObject<Env> {
         providerOptions,
       });
 
+      clearInterval(typingInterval);
+
       // Send reply
       if (result.text) {
         try {
@@ -275,6 +375,7 @@ export class ConversationSqlDO extends DurableObject<Env> {
         await extractAndStoreMemories(this.env, model, userText, result.text, memoryCtx);
       }
     } catch (e) {
+      clearInterval(typingInterval);
       console.error('alarm processMessage failed:', e);
       try {
         await this.sendReply(replyTo, 'An error occurred while processing your message. Please try again.');
@@ -461,6 +562,13 @@ export class ConversationSqlDO extends DurableObject<Env> {
       default:
         return null;
     }
+  }
+
+  private startTypingIndicator(dest: ReplyDestination): ReturnType<typeof setInterval> | null {
+    if (dest.channel !== 'telegram') return null;
+    const send = () => sendTelegramChatAction(dest.chatId, 'typing', this.env.TELEGRAM_BOT_TOKEN).catch(() => {});
+    send();
+    return setInterval(send, 4_000);
   }
 
   private async sendReply(dest: ReplyDestination, text: string): Promise<void> {
