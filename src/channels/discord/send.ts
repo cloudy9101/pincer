@@ -45,6 +45,25 @@ export async function editDiscordInteractionResponse(
   }
 }
 
+export async function editDiscordOriginal(
+  appId: string,
+  interactionToken: string,
+  text: string,
+): Promise<void> {
+  const response = await fetch(`${DISCORD_API}/webhooks/${appId}/${interactionToken}/messages/@original`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: text.slice(0, MAX_MESSAGE_LENGTH) }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    console.error(`Discord edit original failed: ${response.status} ${error}`);
+  } else {
+    response.body?.cancel();
+  }
+}
+
 export async function sendDiscordFollowup(
   appId: string,
   interactionToken: string,

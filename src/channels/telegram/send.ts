@@ -49,12 +49,69 @@ export async function sendTelegramMessage(message: OutgoingMessage, botToken: st
   }
 }
 
+export async function sendTelegramMessageAndGetId(
+  message: OutgoingMessage,
+  botToken: string,
+): Promise<string> {
+  const body: Record<string, unknown> = {
+    chat_id: message.chatId,
+    text: message.text,
+  };
+
+  if (message.replyToMessageId) {
+    body.reply_parameters = { message_id: Number(message.replyToMessageId) };
+  }
+
+  if (message.threadId) {
+    body.message_thread_id = Number(message.threadId);
+  }
+
+  const response = await fetch(`${TELEGRAM_API}${botToken}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Telegram sendMessage failed: ${response.status} ${error}`);
+  }
+
+  const data = (await response.json()) as { result: { message_id: number } };
+  return String(data.result.message_id);
+}
+
+export async function editTelegramMessage(
+  chatId: string,
+  messageId: string,
+  text: string,
+  botToken: string,
+): Promise<void> {
+  const response = await fetch(`${TELEGRAM_API}${botToken}/editMessageText`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      message_id: Number(messageId),
+      text,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    console.error(`Telegram editMessageText failed: ${response.status} ${error}`);
+  } else {
+    response.body?.cancel();
+  }
+}
+
 export async function sendTelegramChatAction(chatId: string, action: string, botToken: string): Promise<void> {
-  await fetch(`${TELEGRAM_API}${botToken}/sendChatAction`, {
+  const response = await fetch(`${TELEGRAM_API}${botToken}/sendChatAction`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: chatId, action }),
   });
+  response.body?.cancel();
 }
 
 function splitMessage(text: string, maxLength: number): string[] {

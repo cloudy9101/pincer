@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { generateText, stepCountIs } from 'ai';
+import { generateText, streamText, stepCountIs } from 'ai';
 import type { ModelMessage } from 'ai';
 import type { Env } from '../env.ts';
 import { getModel, parseModelString } from '../llm/gateway.ts';
@@ -10,8 +10,8 @@ import { extractAndStoreMemories } from '../memory/auto-extract.ts';
 import type { MemoryContext } from '../memory/types.ts';
 import { loadActiveSkills } from '../skills/loader.ts';
 import { formatSkillsPrompt } from '../skills/prompt.ts';
-import { sendTelegramMessage, sendTelegramChatAction } from '../channels/telegram/send.ts';
-import { editDiscordInteractionResponse } from '../channels/discord/send.ts';
+import { sendTelegramMessage, sendTelegramMessageAndGetId, sendTelegramChatAction, editTelegramMessage } from '../channels/telegram/send.ts';
+import { editDiscordInteractionResponse, editDiscordOriginal } from '../channels/discord/send.ts';
 import { getAgent } from '../config/loader.ts';
 import { getCanonicalId } from '../routing/identity-links.ts';
 import { isAllowed } from '../security/allowlist.ts';
@@ -92,6 +92,7 @@ type SessionStateRow = {
 };
 
 const MAX_TOOL_STEPS = 20;
+const STREAM_EDIT_INTERVAL_MS = 1500;
 
 export class ConversationSqlDO extends DurableObject<Env> {
   private sql = this.ctx.storage.sql;
@@ -274,6 +275,7 @@ export class ConversationSqlDO extends DurableObject<Env> {
       maxOutputTokens: maxTokens,
       temperature: thinkingLevel !== 'none' ? undefined : temperature,
       providerOptions,
+      maxRetries: 0,
     });
 
     // Count tool calls across all steps
@@ -302,6 +304,16 @@ export class ConversationSqlDO extends DurableObject<Env> {
     await this.ctx.storage.delete('pendingReplyTo');
     await this.ctx.storage.delete('pendingSessionKey');
     if (!replyTo || !sessionKey || !this.state_) return;
+
+    // Auto-compact if history exceeds message count or byte size threshold
+    const historyBytes = this.history.reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length), 0);
+    if (this.history.length >= DEFAULTS.compactionThreshold || historyBytes >= DEFAULTS.compactionBytesThreshold) {
+      try {
+        await this.compact();
+      } catch (e) {
+        console.error('Auto-compact failed, continuing with full history:', e);
+      }
+    }
 
     // Extract the user's text from the last history message
     const lastMsg = this.history[this.history.length - 1];
@@ -340,7 +352,7 @@ export class ConversationSqlDO extends DurableObject<Env> {
 
       const providerOptions = buildProviderOptions(this.state_);
 
-      const result = await generateText({
+      const result = streamText({
         model,
         system: systemPrompt,
         messages: this.history,
@@ -349,30 +361,69 @@ export class ConversationSqlDO extends DurableObject<Env> {
         maxOutputTokens: this.state_.maxTokens,
         temperature: this.state_.thinkingLevel !== 'none' ? undefined : this.state_.temperature,
         providerOptions,
+        maxRetries: 0,
       });
+
+      // Stream partial text to user via periodic edits
+      let accumulatedText = '';
+      let lastEditTime = 0;
+      let sentMessageId: string | undefined; // Telegram message ID for edits
+      let lastEditedText = ''; // Track what we last sent to avoid redundant edits
+
+      for await (const part of result.fullStream) {
+        if (part.type === 'text-delta') {
+          accumulatedText += part.text;
+
+          const now = Date.now();
+          if (now - lastEditTime >= STREAM_EDIT_INTERVAL_MS && accumulatedText.length > 0) {
+            lastEditTime = now;
+            try {
+              if (!sentMessageId && accumulatedText !== lastEditedText) {
+                sentMessageId = await this.sendInitialPartial(replyTo, accumulatedText);
+                lastEditedText = accumulatedText;
+              } else if (sentMessageId && accumulatedText !== lastEditedText) {
+                await this.editPartialReply(replyTo, accumulatedText, sentMessageId);
+                lastEditedText = accumulatedText;
+              }
+            } catch (e) {
+              console.error('Partial edit failed:', e);
+            }
+          }
+        }
+      }
 
       clearInterval(typingInterval);
 
-      // Send reply
-      if (result.text) {
+      // Final text from the stream
+      const finalText = await result.text;
+
+      // Final delivery: if we already sent a partial message, do a final edit.
+      // Otherwise fall through to sendReply for the complete message.
+      if (finalText) {
         try {
-          await this.sendReply(replyTo, result.text);
+          if (sentMessageId && finalText !== lastEditedText) {
+            await this.editPartialReply(replyTo, finalText, sentMessageId);
+          } else if (!sentMessageId) {
+            await this.sendReply(replyTo, finalText);
+          }
         } catch (e) {
           console.error('Failed to send reply:', e);
         }
       }
 
       // Persist
-      this.appendMessages(result.response.messages);
-      this.state_.messageCount += result.response.messages.length;
+      const response = await result.response;
+      this.appendMessages(response.messages as ModelMessage[]);
+      this.state_.messageCount += response.messages.length;
       this.saveState(this.state_);
 
-      const inputTokens = result.totalUsage.inputTokens ?? 0;
-      const outputTokens = result.totalUsage.outputTokens ?? 0;
+      const totalUsage = await result.totalUsage;
+      const inputTokens = totalUsage.inputTokens ?? 0;
+      const outputTokens = totalUsage.outputTokens ?? 0;
       await this.logUsage(sessionKey, this.state_.model, inputTokens, outputTokens);
 
-      if (DEFAULTS.memoryAutoExtractEnabled && result.text) {
-        await extractAndStoreMemories(this.env, model, userText, result.text, memoryCtx);
+      if (DEFAULTS.memoryAutoExtractEnabled && finalText) {
+        await extractAndStoreMemories(this.env, model, userText, finalText, memoryCtx);
       }
     } catch (e) {
       clearInterval(typingInterval);
@@ -414,6 +465,7 @@ export class ConversationSqlDO extends DurableObject<Env> {
       prompt: summaryPrompt,
       maxOutputTokens: 2048,
       temperature: 0.3,
+      maxRetries: 0,
     });
 
     this.sql.exec('DELETE FROM messages');
@@ -596,6 +648,44 @@ export class ConversationSqlDO extends DurableObject<Env> {
         break;
       default:
         console.error(`Unknown reply channel: ${dest.channel}`);
+    }
+  }
+
+  /** Send the first partial message and return an ID for subsequent edits. */
+  private async sendInitialPartial(dest: ReplyDestination, text: string): Promise<string | undefined> {
+    switch (dest.channel) {
+      case 'telegram':
+        return sendTelegramMessageAndGetId(
+          {
+            channel: 'telegram',
+            chatId: dest.chatId,
+            text,
+            replyToMessageId: dest.chatType === 'group' ? dest.channelMessageId : undefined,
+          },
+          this.env.TELEGRAM_BOT_TOKEN,
+        );
+      case 'discord':
+        if (dest.interactionToken) {
+          await editDiscordOriginal(this.env.DISCORD_APP_ID, dest.interactionToken, text);
+          return 'discord'; // sentinel — Discord edits use interactionToken, not a message ID
+        }
+        return undefined;
+      default:
+        return undefined;
+    }
+  }
+
+  /** Edit a previously sent partial message with updated text. */
+  private async editPartialReply(dest: ReplyDestination, text: string, messageId: string): Promise<void> {
+    switch (dest.channel) {
+      case 'telegram':
+        await editTelegramMessage(dest.chatId, messageId, text, this.env.TELEGRAM_BOT_TOKEN);
+        break;
+      case 'discord':
+        if (dest.interactionToken) {
+          await editDiscordOriginal(this.env.DISCORD_APP_ID, dest.interactionToken, text);
+        }
+        break;
     }
   }
 

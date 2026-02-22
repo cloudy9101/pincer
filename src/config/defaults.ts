@@ -4,6 +4,7 @@ export const DEFAULTS = {
   maxTokens: 4096,
   thinkingLevel: 'medium',
   compactionThreshold: 200,
+  compactionBytesThreshold: 300_000,
   compactionKeepRecent: 50,
   rateLimitPerMinute: 20,
   pairingCodeTtlSeconds: 300,
