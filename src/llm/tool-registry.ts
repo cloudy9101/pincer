@@ -17,6 +17,9 @@ import { registerMCPServer, removeMCPServer } from '../mcp/installer.ts';
 import { getAgent } from '../config/loader.ts';
 import { buildDelegateSessionKey } from '../routing/session-key.ts';
 import type { TaskInput } from '../durables/conversation.ts';
+import { startOAuthFlow } from '../oauth/flow.ts';
+import { getConnection, revokeConnection } from '../oauth/tokens.ts';
+import { listProviders } from '../oauth/providers.ts';
 
 export interface ToolCallContext {
   env: Env;
@@ -222,7 +225,7 @@ export async function buildToolSet(ctx: ToolCallContext): Promise<ToolSet> {
 
       // Inject auth if a skill is specified
       if (args.skill) {
-        await applySkillAuth(args.skill, requestArgs, ctx.env);
+        await applySkillAuth(args.skill, requestArgs, ctx.env, ctx.userId);
       }
 
       try {
@@ -403,6 +406,84 @@ export async function buildToolSet(ctx: ToolCallContext): Promise<ToolSet> {
     execute: async (args: { name: string }) => {
       const removed = await removeMCPServer(ctx.env, args.name);
       return JSON.stringify({ removed, name: args.name });
+    },
+  });
+
+  // ─── OAuth tools ──────────────────────────────────────────
+
+  tools.oauth_connect = tool({
+    description:
+      'Generate a URL for the user to connect their account with an OAuth provider (e.g. Google, GitHub, Microsoft). The user must click the link to authorize. Returns a connect URL.',
+    inputSchema: jsonSchema<{ provider: string; scopes?: string[] }>({
+      type: 'object',
+      properties: {
+        provider: {
+          type: 'string',
+          description: 'OAuth provider name',
+          enum: listProviders(),
+        },
+        scopes: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional additional OAuth scopes to request',
+        },
+      },
+      required: ['provider'],
+    }),
+    execute: async (args: { provider: string; scopes?: string[] }) => {
+      try {
+        const { connectUrl } = await startOAuthFlow(ctx.env, ctx.userId, args.provider, args.scopes);
+        return JSON.stringify({ connectUrl, provider: args.provider });
+      } catch (e) {
+        return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+      }
+    },
+  });
+
+  tools.oauth_status = tool({
+    description:
+      'Check which OAuth providers the user has connected. Returns a list of connected providers with their email/user info.',
+    inputSchema: jsonSchema<Record<string, never>>({
+      type: 'object',
+      properties: {},
+    }),
+    execute: async () => {
+      const connections: Array<{ provider: string; email?: string; providerUserId?: string }> = [];
+      for (const provider of listProviders()) {
+        const conn = await getConnection(ctx.env, ctx.userId, provider);
+        if (conn) {
+          connections.push({
+            provider: conn.provider,
+            email: conn.providerEmail,
+            providerUserId: conn.providerUserId,
+          });
+        }
+      }
+      return JSON.stringify({ connections, availableProviders: listProviders() });
+    },
+  });
+
+  tools.oauth_disconnect = tool({
+    description:
+      'Disconnect an OAuth provider, removing the stored tokens. The user will need to re-authorize to use OAuth-protected skills for this provider.',
+    inputSchema: jsonSchema<{ provider: string }>({
+      type: 'object',
+      properties: {
+        provider: {
+          type: 'string',
+          description: 'OAuth provider name to disconnect',
+          enum: listProviders(),
+        },
+      },
+      required: ['provider'],
+    }),
+    execute: async (args: { provider: string }) => {
+      const conn = await getConnection(ctx.env, ctx.userId, args.provider);
+      if (!conn) {
+        return JSON.stringify({ disconnected: false, reason: 'No connection found for this provider' });
+      }
+      const removed = await revokeConnection(ctx.env, conn.id);
+      return JSON.stringify({ disconnected: removed, provider: args.provider });
     },
   });
 

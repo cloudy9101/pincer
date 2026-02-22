@@ -1,4 +1,4 @@
-export type SkillAuthType = 'none' | 'bearer' | 'header' | 'query' | 'basic';
+export type SkillAuthType = 'none' | 'bearer' | 'header' | 'query' | 'basic' | 'oauth';
 
 export interface SkillAuthConfig {
   type: SkillAuthType;
@@ -12,6 +12,10 @@ export interface SkillAuthConfig {
   username_secret?: string;
   /** Secret key name for basic auth password */
   password_secret?: string;
+  /** OAuth provider name (for 'oauth' type) */
+  provider?: string;
+  /** OAuth scopes override (for 'oauth' type, space-separated) */
+  scopes?: string;
 }
 
 export interface SkillFrontmatter {

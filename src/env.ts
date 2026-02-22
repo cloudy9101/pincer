@@ -37,6 +37,14 @@ export interface Env {
   ENCRYPTION_KEY: string;
   ADMIN_AUTH_TOKEN: string;
 
+  // Secrets - OAuth providers
+  GOOGLE_OAUTH_CLIENT_ID?: string;
+  GOOGLE_OAUTH_CLIENT_SECRET?: string;
+  GITHUB_OAUTH_CLIENT_ID?: string;
+  GITHUB_OAUTH_CLIENT_SECRET?: string;
+  MICROSOFT_OAUTH_CLIENT_ID?: string;
+  MICROSOFT_OAUTH_CLIENT_SECRET?: string;
+
   // Secrets - Cloudflare
   CF_ACCOUNT_ID: string;
   CF_API_TOKEN?: string;

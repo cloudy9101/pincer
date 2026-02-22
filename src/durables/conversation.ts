@@ -248,7 +248,7 @@ export class ConversationSqlDO extends DurableObject<Env> {
     }
 
     const skills = await loadActiveSkills(this.env);
-    const skillsSection = await formatSkillsPrompt(skills, this.env);
+    const skillsSection = await formatSkillsPrompt(skills, this.env, input.userId);
     if (skillsSection) {
       systemPrompt = systemPrompt + skillsSection;
     }
@@ -333,7 +333,7 @@ export class ConversationSqlDO extends DurableObject<Env> {
       }
 
       const skills = await loadActiveSkills(this.env);
-      const skillsSection = await formatSkillsPrompt(skills, this.env);
+      const skillsSection = await formatSkillsPrompt(skills, this.env, this.state_.userId);
       if (skillsSection) {
         systemPrompt = systemPrompt + skillsSection;
       }

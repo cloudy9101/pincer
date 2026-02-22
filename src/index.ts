@@ -22,6 +22,8 @@ import { registerMCPServer, removeMCPServer, updateMCPServer, updateMCPServerHea
 import { getMCPServer } from './mcp/loader.ts';
 import { discoverMCPTools } from './mcp/client.ts';
 import type { IncomingMessage } from './channels/types.ts';
+import { handleConnect, handleCallback } from './oauth/flow.ts';
+import { revokeConnection } from './oauth/tokens.ts';
 
 export { ConversationSqlDO } from './durables/conversation.ts';
 
@@ -42,6 +44,14 @@ export default {
       // Media serving
       if (path.startsWith('/media/') && request.method === 'GET') {
         return handleMediaServe(path, env);
+      }
+
+      // OAuth connect/callback (public — auth is via state token)
+      if (path.startsWith('/connect/') && request.method === 'GET') {
+        return handleConnect(request, env);
+      }
+      if (path.startsWith('/callback/') && request.method === 'GET') {
+        return handleCallback(request, env);
       }
 
       // Admin routes
@@ -695,6 +705,20 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
   if (path.match(/^\/admin\/mcp\/[^/]+$/) && request.method === 'DELETE') {
     const serverName = decodeURIComponent(path.split('/').pop()!);
     const removed = await removeMCPServer(env, serverName);
+    return json({ ok: removed });
+  }
+
+  // OAuth connections
+  if (path === '/admin/oauth' && request.method === 'GET') {
+    const { results } = await env.DB.prepare(
+      'SELECT id, user_id, provider, scopes, provider_user_id, provider_email, created_at, updated_at FROM oauth_connections ORDER BY created_at DESC'
+    ).all();
+    return json(results);
+  }
+
+  if (path.match(/^\/admin\/oauth\/[^/]+$/) && request.method === 'DELETE') {
+    const connectionId = path.split('/').pop()!;
+    const removed = await revokeConnection(env, connectionId);
     return json({ ok: removed });
   }
 

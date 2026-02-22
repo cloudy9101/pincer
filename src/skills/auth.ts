@@ -2,6 +2,7 @@ import type { Env } from '../env.ts';
 import type { SkillAuthConfig } from './types.ts';
 import { getSkill } from './loader.ts';
 import { decrypt } from '../security/encryption.ts';
+import { getAccessToken } from '../oauth/tokens.ts';
 
 export interface FetchRequestArgs {
   url: string;
@@ -18,6 +19,7 @@ export async function applySkillAuth(
   skillName: string,
   requestArgs: FetchRequestArgs,
   env: Env,
+  userId?: string,
 ): Promise<void> {
   const skill = await getSkill(env, skillName);
   if (!skill?.authConfig) return;
@@ -62,6 +64,15 @@ export async function applySkillAuth(
       if (username && password) {
         const encoded = btoa(`${username}:${password}`);
         requestArgs.headers['Authorization'] = `Basic ${encoded}`;
+      }
+      break;
+    }
+
+    case 'oauth': {
+      if (!auth.provider || !userId) break;
+      const token = await getAccessToken(env, userId, auth.provider);
+      if (token) {
+        requestArgs.headers['Authorization'] = `Bearer ${token}`;
       }
       break;
     }
