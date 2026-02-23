@@ -1,9 +1,22 @@
 import type { SkillFrontmatter, SkillAuthType } from './types.ts';
 
+const NAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+
+function validateSkillName(name: string): void {
+  if (name.length === 0 || name.length > 64) {
+    throw new Error(`Skill name must be 1-64 characters, got ${name.length}`);
+  }
+  if (!NAME_RE.test(name) || name.includes('--')) {
+    throw new Error(
+      `Skill name "${name}" is invalid. Must contain only lowercase letters, numbers, and hyphens; must not start/end with a hyphen or contain consecutive hyphens.`
+    );
+  }
+}
+
 /**
  * Parse a SKILL.md file into frontmatter and body.
  * Hand-rolled minimal YAML parser — handles flat key-value pairs
- * and one nested `auth` object. No external dependencies.
+ * and one nested `auth`/`metadata` object. No external dependencies.
  */
 export function parseSkillContent(content: string): { frontmatter: SkillFrontmatter; body: string } {
   const trimmed = content.trim();
@@ -25,10 +38,24 @@ export function parseSkillContent(content: string): { frontmatter: SkillFrontmat
     throw new Error('Skill frontmatter must include a "name" field');
   }
 
+  validateSkillName(data.name);
+
+  // Resolve version: top-level takes precedence over metadata.version
+  const metadataMap = (data.metadata && typeof data.metadata === 'object')
+    ? data.metadata as Record<string, string>
+    : null;
+  const version = (data.version as string | undefined)
+    ?? metadataMap?.version
+    ?? undefined;
+
   const frontmatter: SkillFrontmatter = {
     name: data.name,
     description: data.description as string | undefined,
-    version: data.version as string | undefined,
+    version,
+    license: data.license as string | undefined,
+    compatibility: data.compatibility as string | undefined,
+    metadata: metadataMap ?? undefined,
+    allowedTools: (data['allowed-tools'] as string | undefined),
   };
 
   if (data.auth && typeof data.auth === 'object') {

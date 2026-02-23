@@ -3,53 +3,50 @@ import type { Skill } from './types.ts';
 import { getRequiredSecretKeys } from './auth.ts';
 
 /**
- * Format active skills as a system prompt section.
+ * Format active skills as a compact index in the system prompt (Tier 1).
+ * Full skill bodies are loaded on demand via the `skill_read` tool.
  * Returns null if there are no active skills.
  */
 export async function formatSkillsPrompt(skills: Skill[], env: Env, userId?: string): Promise<string | null> {
   if (skills.length === 0) return null;
 
-  const sections: string[] = [];
+  const lines: string[] = [];
 
   for (const skill of skills) {
-    const requiredKeys = getRequiredSecretKeys(skill.authConfig);
-    let setupNote = '';
+    const name = skill.name;
+    const description = skill.description ?? '(no description)';
+    let note = '';
 
+    // Auth setup warnings — still useful in the index so the user knows before trying
+    const requiredKeys = getRequiredSecretKeys(skill.authConfig);
     if (requiredKeys.length > 0) {
-      const configuredKeys = await getConfiguredSecretKeys(env, skill.name);
+      const configuredKeys = await getConfiguredSecretKeys(env, name);
       const missing = requiredKeys.filter(k => !configuredKeys.includes(k));
       if (missing.length > 0) {
-        setupNote = `\n\n> **[Requires setup]** Missing secrets: ${missing.join(', ')}. Ask the admin to configure them.`;
+        note = ` ⚠️ Missing secrets: ${missing.join(', ')}`;
       }
     }
 
-    // OAuth-specific status note
     if (skill.authType === 'oauth' && skill.authConfig?.provider) {
       const provider = skill.authConfig.provider;
       if (userId) {
         const hasConnection = await checkOAuthConnection(env, userId, provider);
         if (!hasConnection) {
-          setupNote = `\n\n> **[Requires OAuth]** Connect your ${provider} account using the \`oauth_connect\` tool before using this skill.`;
+          note = ` ⚠️ Requires OAuth — call \`oauth_connect\` for ${provider} first`;
         }
       } else {
-        setupNote = `\n\n> **[Requires OAuth]** Connect your ${provider} account using the \`oauth_connect\` tool.`;
+        note = ` ⚠️ Requires OAuth — call \`oauth_connect\` for ${provider} first`;
       }
     }
 
-    const authNote = skill.authType !== 'none'
-      ? `\n\n> Authentication is handled automatically — do NOT include API keys or tokens in requests. Use the \`fetch\` tool with \`skill: "${skill.name}"\` to make authenticated requests.`
-      : '';
-
-    sections.push(
-      `### ${skill.displayName ?? skill.name}${skill.description ? ` — ${skill.description}` : ''}` +
-      authNote +
-      setupNote +
-      '\n\n' +
-      skill.body
-    );
+    lines.push(`- **${name}** — ${description}${note}`);
   }
 
-  return '\n\n## Available Skills\n\n' + sections.join('\n\n---\n\n');
+  return (
+    '\n\n## Available Skills\n\n' +
+    'The following skills are available. Call `skill_read` with the skill name to load its full instructions before using it.\n\n' +
+    lines.join('\n')
+  );
 }
 
 async function checkOAuthConnection(env: Env, userId: string, provider: string): Promise<boolean> {

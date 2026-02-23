@@ -23,6 +23,10 @@ export interface SkillFrontmatter {
   description?: string;
   auth?: SkillAuthConfig;
   version?: string;
+  license?: string;
+  compatibility?: string;
+  metadata?: Record<string, string>;
+  allowedTools?: string;
 }
 
 export interface Skill {
@@ -37,6 +41,10 @@ export interface Skill {
   authConfig: SkillAuthConfig | null;
   sourceUrl: string | null;
   version: string | null;
+  license: string | null;
+  compatibility: string | null;
+  metadata: Record<string, string> | null;
+  allowedTools: string | null;
   status: string;
 }
 

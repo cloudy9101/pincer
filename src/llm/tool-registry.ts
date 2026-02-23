@@ -265,6 +265,26 @@ export async function buildToolSet(ctx: ToolCallContext): Promise<ToolSet> {
     },
   });
 
+  tools.skill_read = tool({
+    description:
+      'Load the full instructions for an available skill. Call this before using any skill to get step-by-step guidance. Returns the skill body (markdown). Does not expose authentication configuration.',
+    inputSchema: jsonSchema<{ name: string }>({
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The skill name (as listed in Available Skills)' },
+      },
+      required: ['name'],
+    }),
+    execute: async (args: { name: string }) => {
+      const { getSkill } = await import('../skills/loader.ts');
+      const skill = await getSkill(ctx.env, args.name);
+      if (!skill) {
+        return JSON.stringify({ error: `Skill "${args.name}" not found. Check the Available Skills list for valid names.` });
+      }
+      return skill.body;
+    },
+  });
+
   tools.skill_install = tool({
     description:
       'Install a new skill from a URL pointing to a SKILL.md file. Returns the skill name and any required secret keys that need to be configured.',

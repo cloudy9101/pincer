@@ -31,8 +31,8 @@ export async function installSkill(env: Env, input: SkillInstallInput): Promise<
   const authType = authConfig?.type ?? 'none';
 
   await env.DB.prepare(
-    `INSERT INTO skills (name, display_name, description, content, auth_type, auth_config, source_url, version, status, installed_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', unixepoch(), unixepoch())
+    `INSERT INTO skills (name, display_name, description, content, auth_type, auth_config, source_url, version, license, compatibility, metadata, allowed_tools, status, installed_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', unixepoch(), unixepoch())
      ON CONFLICT (name) DO UPDATE SET
        display_name = excluded.display_name,
        description = excluded.description,
@@ -41,6 +41,10 @@ export async function installSkill(env: Env, input: SkillInstallInput): Promise<
        auth_config = excluded.auth_config,
        source_url = excluded.source_url,
        version = excluded.version,
+       license = excluded.license,
+       compatibility = excluded.compatibility,
+       metadata = excluded.metadata,
+       allowed_tools = excluded.allowed_tools,
        status = excluded.status,
        updated_at = unixepoch()`
   ).bind(
@@ -52,6 +56,10 @@ export async function installSkill(env: Env, input: SkillInstallInput): Promise<
     authConfig ? JSON.stringify(authConfig) : null,
     sourceUrl,
     frontmatter.version ?? null,
+    frontmatter.license ?? null,
+    frontmatter.compatibility ?? null,
+    frontmatter.metadata ? JSON.stringify(frontmatter.metadata) : null,
+    frontmatter.allowedTools ?? null,
   ).run();
 
   await invalidateSkillsCache(env);

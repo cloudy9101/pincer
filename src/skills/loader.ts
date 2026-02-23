@@ -49,6 +49,10 @@ function rowToSkill(row: Record<string, unknown>): Skill {
     authConfig: row.auth_config ? JSON.parse(row.auth_config as string) as SkillAuthConfig : null,
     sourceUrl: row.source_url as string | null,
     version: row.version as string | null,
+    license: row.license as string | null,
+    compatibility: row.compatibility as string | null,
+    metadata: row.metadata ? JSON.parse(row.metadata as string) as Record<string, string> : null,
+    allowedTools: row.allowed_tools as string | null,
     status: row.status as string,
   };
 }
