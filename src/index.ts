@@ -71,6 +71,11 @@ export default {
         }
       }
 
+      // Admin SPA (static assets)
+      if (path.startsWith('/dashboard/') || path === '/dashboard') {
+        return env.ASSETS.fetch(request);
+      }
+
       // Health check
       if (path === '/' || path === '/health') {
         return json({ status: 'ok', service: 'pincer-gateway' });

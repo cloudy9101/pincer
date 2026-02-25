@@ -45,6 +45,9 @@ export interface Env {
   MICROSOFT_OAUTH_CLIENT_ID?: string;
   MICROSOFT_OAUTH_CLIENT_SECRET?: string;
 
+  // Static Assets (admin SPA)
+  ASSETS: Fetcher;
+
   // Secrets - Cloudflare
   CF_ACCOUNT_ID: string;
   CF_API_TOKEN?: string;
