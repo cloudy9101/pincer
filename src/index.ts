@@ -24,10 +24,14 @@ import { discoverMCPTools } from './mcp/client.ts';
 import type { IncomingMessage } from './channels/types.ts';
 import { handleConnect, handleCallback } from './oauth/flow.ts';
 import { revokeConnection } from './oauth/tokens.ts';
+import { runCronJobs } from './cron/runner.ts';
 
 export { ConversationSqlDO } from './durables/conversation.ts';
 
 export default {
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(runCronJobs(env, controller.scheduledTime));
+  },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -59,7 +63,12 @@ export default {
         if (!verifyAdminAuth(request, env.ADMIN_AUTH_TOKEN)) {
           return new Response('Unauthorized', { status: 401 });
         }
-        return handleAdminRoute(request, path, env);
+        try {
+          return await handleAdminRoute(request, path, env);
+        } catch (error) {
+          log('error', 'Admin route error', { error: String(error), path });
+          return json({ error: String(error) }, 500);
+        }
       }
 
       // Health check
@@ -78,20 +87,25 @@ export default {
 // ─── Telegram Webhook ────────────────────────────────────────
 
 async function handleTelegramWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  // Verify webhook signature
-  if (!await verifyTelegramWebhook(request, env.TELEGRAM_WEBHOOK_SECRET)) {
-    return new Response('Unauthorized', { status: 401 });
-  }
+  try {
+    // Verify webhook signature
+    if (!await verifyTelegramWebhook(request, env.TELEGRAM_WEBHOOK_SECRET)) {
+      return new Response('Unauthorized', { status: 401 });
+    }
 
-  const body = await request.json();
-  const msg = parseTelegramWebhook(body as import('./channels/telegram/types.ts').TelegramUpdate);
-  if (!msg) {
-    return new Response('OK'); // Not a message we handle
-  }
+    const body = await request.json();
+    const msg = parseTelegramWebhook(body as import('./channels/telegram/types.ts').TelegramUpdate);
+    if (!msg) {
+      return new Response('OK'); // Not a message we handle
+    }
 
-  // Handle in background so we can return 200 immediately
-  ctx.waitUntil(processTelegramMessage(msg, env));
-  return new Response('OK');
+    // Handle in background so we can return 200 immediately
+    ctx.waitUntil(processTelegramMessage(msg, env));
+    return new Response('OK');
+  } catch (error) {
+    log('error', 'Telegram webhook error', { error: String(error), url: request.url });
+    return new Response('', { status: 200 });
+  }
 }
 
 async function processTelegramMessage(msg: IncomingMessage, env: Env): Promise<void> {
@@ -198,28 +212,33 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env): Promise<v
 // ─── Discord Webhook ─────────────────────────────────────────
 
 async function handleDiscordWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  // Verify Ed25519 signature
-  if (!await verifyDiscordWebhook(request, env.DISCORD_PUBLIC_KEY)) {
-    return new Response('Invalid signature', { status: 401 });
+  try {
+    // Verify Ed25519 signature
+    if (!await verifyDiscordWebhook(request, env.DISCORD_PUBLIC_KEY)) {
+      return new Response('Invalid signature', { status: 401 });
+    }
+
+    const body = (await request.json()) as DiscordInteraction;
+
+    // Handle PING (used by Discord to verify the endpoint)
+    if (body.type === InteractionType.PING) {
+      return json({ type: InteractionCallbackType.PONG });
+    }
+
+    // Only handle APPLICATION_COMMAND
+    if (body.type !== InteractionType.APPLICATION_COMMAND) {
+      return new Response('Unhandled interaction type', { status: 400 });
+    }
+
+    // Defer the response immediately (shows "thinking...")
+    // Then process in the background
+    ctx.waitUntil(processDiscordInteraction(body, env));
+
+    return json({ type: InteractionCallbackType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+  } catch (error) {
+    log('error', 'Discord webhook error', { error: String(error), url: request.url });
+    return new Response('', { status: 200 });
   }
-
-  const body = (await request.json()) as DiscordInteraction;
-
-  // Handle PING (used by Discord to verify the endpoint)
-  if (body.type === InteractionType.PING) {
-    return json({ type: InteractionCallbackType.PONG });
-  }
-
-  // Only handle APPLICATION_COMMAND
-  if (body.type !== InteractionType.APPLICATION_COMMAND) {
-    return new Response('Unhandled interaction type', { status: 400 });
-  }
-
-  // Defer the response immediately (shows "thinking...")
-  // Then process in the background
-  ctx.waitUntil(processDiscordInteraction(body, env));
-
-  return json({ type: InteractionCallbackType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
 }
 
 async function processDiscordInteraction(interaction: DiscordInteraction, env: Env): Promise<void> {
@@ -720,6 +739,51 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     const connectionId = path.split('/').pop()!;
     const removed = await revokeConnection(env, connectionId);
     return json({ ok: removed });
+  }
+
+  // Cron jobs
+  if (path === '/admin/crons' && request.method === 'GET') {
+    const { results } = await env.DB.prepare(
+      'SELECT id, name, schedule, agent_id, prompt, reply_channel, reply_chat_id, enabled, last_run_at, created_at FROM cron_jobs ORDER BY created_at DESC'
+    ).all();
+    return json(results);
+  }
+
+  if (path === '/admin/crons' && request.method === 'POST') {
+    const body = await request.json() as Record<string, unknown>;
+    const { id, name, schedule, agent_id, prompt, reply_channel = null, reply_chat_id = null } = body;
+    await env.DB.prepare(
+      'INSERT INTO cron_jobs (id, name, schedule, agent_id, prompt, reply_channel, reply_chat_id, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, 1)'
+    ).bind(id, name, schedule, agent_id, prompt, reply_channel, reply_chat_id).run();
+    return json({ ok: true });
+  }
+
+  if (path.match(/^\/admin\/crons\/[^/]+$/) && request.method === 'GET') {
+    const jobId = path.split('/').pop()!;
+    const row = await env.DB.prepare('SELECT * FROM cron_jobs WHERE id = ?').bind(jobId).first();
+    if (!row) return new Response('Not Found', { status: 404 });
+    return json(row);
+  }
+
+  if (path.match(/^\/admin\/crons\/[^/]+$/) && request.method === 'PATCH') {
+    const jobId = path.split('/').pop()!;
+    const body = await request.json() as Record<string, unknown>;
+    const allowed = ['name', 'schedule', 'prompt', 'reply_channel', 'reply_chat_id', 'enabled'] as const;
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const key of allowed) {
+      if (key in body) { sets.push(`${key} = ?`); vals.push(body[key]); }
+    }
+    if (sets.length === 0) return json({ ok: true });
+    vals.push(jobId);
+    await env.DB.prepare(`UPDATE cron_jobs SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
+    return json({ ok: true });
+  }
+
+  if (path.match(/^\/admin\/crons\/[^/]+$/) && request.method === 'DELETE') {
+    const jobId = path.split('/').pop()!;
+    await env.DB.prepare('DELETE FROM cron_jobs WHERE id = ?').bind(jobId).run();
+    return json({ ok: true });
   }
 
   return new Response('Not Found', { status: 404 });

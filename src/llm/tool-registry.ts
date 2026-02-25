@@ -20,11 +20,14 @@ import type { TaskInput } from '../durables/conversation.ts';
 import { startOAuthFlow } from '../oauth/flow.ts';
 import { getConnection, revokeConnection } from '../oauth/tokens.ts';
 import { listProviders } from '../oauth/providers.ts';
+import { Cron } from 'croner';
+import { generateId } from '../utils/crypto.ts';
 
 export interface ToolCallContext {
   env: Env;
   sessionKey: string;
   userId: string;
+  replyTo?: { channel: string; chatId: string };
 }
 
 export async function buildToolSet(ctx: ToolCallContext): Promise<ToolSet> {
@@ -559,6 +562,172 @@ export async function buildToolSet(ctx: ToolCallContext): Promise<ToolSet> {
       } catch (e) {
         return JSON.stringify({ error: `Delegation failed: ${e instanceof Error ? e.message : String(e)}` });
       }
+    },
+  });
+
+  // ─── Cron tools ─────────────────────────────────────────────
+
+  tools.cron_schedule = tool({
+    description:
+      'Schedule a recurring task for this agent. The agent will run the given prompt on the specified cron schedule. Use reply=true to have the result delivered back to this chat.',
+    inputSchema: jsonSchema<{ name: string; schedule: string; prompt: string; reply: boolean }>({
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'A short label for this scheduled job' },
+        schedule: { type: 'string', description: 'A cron expression, e.g. "0 9 * * *" for daily at 9am UTC' },
+        prompt: { type: 'string', description: 'The prompt the agent will run on each trigger' },
+        reply: { type: 'boolean', description: 'If true, the result will be sent back to this chat' },
+      },
+      required: ['name', 'schedule', 'prompt', 'reply'],
+    }),
+    execute: async (args: { name: string; schedule: string; prompt: string; reply: boolean }) => {
+      let cron: Cron;
+      try {
+        cron = new Cron(args.schedule);
+      } catch (e) {
+        return `Invalid cron expression "${args.schedule}": ${e instanceof Error ? e.message : String(e)}`;
+      }
+
+      if (args.reply && !ctx.replyTo) {
+        return 'Cannot schedule a reply-enabled cron from a background task';
+      }
+
+      const id = generateId();
+      const replyChannel = args.reply ? ctx.replyTo!.channel : null;
+      const replyChatId = args.reply ? ctx.replyTo!.chatId : null;
+
+      await ctx.env.DB.prepare(
+        'INSERT INTO cron_jobs (id, name, schedule, agent_id, prompt, reply_channel, reply_chat_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      )
+        .bind(id, args.name, args.schedule, agentId, args.prompt, replyChannel, replyChatId)
+        .run();
+
+      const nextRun = cron.nextRun()?.toISOString() ?? null;
+      return JSON.stringify({ id, name: args.name, schedule: args.schedule, next_run: nextRun });
+    },
+  });
+
+  tools.cron_list = tool({
+    description: 'List all scheduled cron jobs for this agent.',
+    inputSchema: jsonSchema<Record<string, never>>({
+      type: 'object',
+      properties: {},
+    }),
+    execute: async () => {
+      const { results } = await ctx.env.DB.prepare(
+        'SELECT id, name, schedule, enabled, last_run_at FROM cron_jobs WHERE agent_id = ? ORDER BY created_at DESC'
+      )
+        .bind(agentId)
+        .all<{ id: string; name: string; schedule: string; enabled: number; last_run_at: number | null }>();
+
+      const jobs = results.map(row => {
+        let nextRun: string | null = null;
+        try {
+          nextRun = new Cron(row.schedule).nextRun()?.toISOString() ?? null;
+        } catch { /* invalid expression, leave null */ }
+        return {
+          id: row.id,
+          name: row.name,
+          schedule: row.schedule,
+          enabled: row.enabled === 1,
+          last_run_at: row.last_run_at ? new Date(row.last_run_at * 1000).toISOString() : null,
+          next_run: nextRun,
+        };
+      });
+
+      return JSON.stringify(jobs);
+    },
+  });
+
+  tools.cron_cancel = tool({
+    description: 'Cancel and delete a scheduled cron job by its ID.',
+    inputSchema: jsonSchema<{ id: string }>({
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The cron job ID to cancel' },
+      },
+      required: ['id'],
+    }),
+    execute: async (args: { id: string }) => {
+      const result = await ctx.env.DB.prepare(
+        'DELETE FROM cron_jobs WHERE id = ? AND agent_id = ?'
+      )
+        .bind(args.id, agentId)
+        .run();
+
+      if (result.meta.changes === 0) {
+        return JSON.stringify({ ok: false, error: 'Job not found' });
+      }
+      return JSON.stringify({ ok: true });
+    },
+  });
+
+  tools.cron_update = tool({
+    description: 'Update an existing cron job — change its name, schedule, prompt, or reply setting.',
+    inputSchema: jsonSchema<{ id: string; name?: string; schedule?: string; prompt?: string; reply?: boolean }>({
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The cron job ID to update' },
+        name: { type: 'string', description: 'New name for the job' },
+        schedule: { type: 'string', description: 'New cron expression' },
+        prompt: { type: 'string', description: 'New prompt to run on each trigger' },
+        reply: { type: 'boolean', description: 'Update reply delivery setting' },
+      },
+      required: ['id'],
+    }),
+    execute: async (args: { id: string; name?: string; schedule?: string; prompt?: string; reply?: boolean }) => {
+      if (args.schedule !== undefined) {
+        try {
+          new Cron(args.schedule);
+        } catch (e) {
+          return `Invalid cron expression "${args.schedule}": ${e instanceof Error ? e.message : String(e)}`;
+        }
+      }
+
+      if (args.reply === true && !ctx.replyTo) {
+        return 'Cannot enable reply for a cron from a background task';
+      }
+
+      const sets: string[] = [];
+      const binds: unknown[] = [];
+
+      if (args.name !== undefined) { sets.push('name = ?'); binds.push(args.name); }
+      if (args.schedule !== undefined) { sets.push('schedule = ?'); binds.push(args.schedule); }
+      if (args.prompt !== undefined) { sets.push('prompt = ?'); binds.push(args.prompt); }
+      if (args.reply !== undefined) {
+        sets.push('reply_channel = ?');
+        sets.push('reply_chat_id = ?');
+        binds.push(args.reply ? ctx.replyTo!.channel : null);
+        binds.push(args.reply ? ctx.replyTo!.chatId : null);
+      }
+
+      if (sets.length === 0) {
+        return JSON.stringify({ ok: false, error: 'No fields to update' });
+      }
+
+      binds.push(args.id, agentId);
+      const result = await ctx.env.DB.prepare(
+        `UPDATE cron_jobs SET ${sets.join(', ')} WHERE id = ? AND agent_id = ?`
+      )
+        .bind(...binds)
+        .run();
+
+      if (result.meta.changes === 0) {
+        return JSON.stringify({ ok: false, error: 'Job not found' });
+      }
+
+      const schedule = args.schedule ?? (
+        await ctx.env.DB.prepare('SELECT schedule FROM cron_jobs WHERE id = ?')
+          .bind(args.id)
+          .first<{ schedule: string }>()
+      )?.schedule;
+
+      let nextRun: string | null = null;
+      if (schedule) {
+        try { nextRun = new Cron(schedule).nextRun()?.toISOString() ?? null; } catch { /* ignore */ }
+      }
+
+      return JSON.stringify({ ok: true, next_run: nextRun });
     },
   });
 

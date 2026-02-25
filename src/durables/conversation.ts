@@ -328,6 +328,7 @@ export class ConversationSqlDO extends DurableObject<Env> {
         env: this.env,
         sessionKey,
         userId: this.state_.userId,
+        replyTo: { channel: replyTo.channel, chatId: replyTo.chatId },
       };
       const tools = await buildToolSet(toolCtx);
       const model = getModel(this.state_.model, this.env);
