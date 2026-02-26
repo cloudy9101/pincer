@@ -1,4 +1,5 @@
 import type { OutgoingMessage } from '../types.ts';
+import { log } from '../../utils/logger.ts';
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 const MAX_MESSAGE_LENGTH = 4096;
@@ -45,6 +46,8 @@ export async function sendTelegramMessage(message: OutgoingMessage, botToken: st
           body: JSON.stringify(body),
         });
       }
+    } else {
+      log('info', 'Message sent', { channel: 'telegram', chatId: message.chatId }, { handler: 'telegram-send' });
     }
   }
 }

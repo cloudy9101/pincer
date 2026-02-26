@@ -35,14 +35,17 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+    const traceId = crypto.randomUUID();
 
     try {
       // Webhook routes
       if (path === '/webhook/telegram' && request.method === 'POST') {
-        return handleTelegramWebhook(request, env, ctx);
+        log('info', 'Webhook received', { method: request.method, path }, { traceId, handler: 'telegram' });
+        return handleTelegramWebhook(request, env, ctx, traceId);
       }
       if (path === '/webhook/discord' && request.method === 'POST') {
-        return handleDiscordWebhook(request, env, ctx);
+        log('info', 'Webhook received', { method: request.method, path }, { traceId, handler: 'discord' });
+        return handleDiscordWebhook(request, env, ctx, traceId);
       }
 
       // Media serving
@@ -83,7 +86,7 @@ export default {
 
       return new Response('Not Found', { status: 404 });
     } catch (error) {
-      log('error', 'Unhandled error', { error: String(error), path });
+      log('error', 'Unhandled error', { error: String(error), path }, { traceId, handler: 'fetch' });
       return new Response('Internal Server Error', { status: 500 });
     }
   },
@@ -91,7 +94,7 @@ export default {
 
 // ─── Telegram Webhook ────────────────────────────────────────
 
-async function handleTelegramWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+async function handleTelegramWebhook(request: Request, env: Env, ctx: ExecutionContext, traceId: string): Promise<Response> {
   try {
     // Verify webhook signature
     if (!await verifyTelegramWebhook(request, env.TELEGRAM_WEBHOOK_SECRET)) {
@@ -105,15 +108,15 @@ async function handleTelegramWebhook(request: Request, env: Env, ctx: ExecutionC
     }
 
     // Handle in background so we can return 200 immediately
-    ctx.waitUntil(processTelegramMessage(msg, env));
+    ctx.waitUntil(processTelegramMessage(msg, env, traceId));
     return new Response('OK');
   } catch (error) {
-    log('error', 'Telegram webhook error', { error: String(error), url: request.url });
+    log('error', 'Telegram webhook error', { error: String(error) }, { traceId, handler: 'telegram' });
     return new Response('', { status: 200 });
   }
 }
 
-async function processTelegramMessage(msg: IncomingMessage, env: Env): Promise<void> {
+async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: string): Promise<void> {
   try {
     // Commands skip allowlist/rate-limit checks
     const isCommand = msg.text.startsWith('/');
@@ -177,6 +180,8 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env): Promise<v
     const doId = env.CONVERSATION_DO.idFromName(sessionKey);
     const stub = env.CONVERSATION_DO.get(doId);
 
+    log('info', 'DO dispatch', { sessionKey }, { traceId, handler: 'do-dispatch' });
+
     // DO sends the reply directly — await ensures RPC is dispatched
     await stub.message({
       text: msg.text,
@@ -198,7 +203,7 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env): Promise<v
       },
     });
   } catch (error) {
-    log('error', 'Error processing message', { error: String(error), senderId: msg.senderId });
+    log('error', 'Error processing message', { error: String(error), senderId: msg.senderId }, { traceId, handler: 'telegram' });
     try {
       await sendTelegramMessage(
         {
@@ -216,7 +221,7 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env): Promise<v
 
 // ─── Discord Webhook ─────────────────────────────────────────
 
-async function handleDiscordWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+async function handleDiscordWebhook(request: Request, env: Env, ctx: ExecutionContext, traceId: string): Promise<Response> {
   try {
     // Verify Ed25519 signature
     if (!await verifyDiscordWebhook(request, env.DISCORD_PUBLIC_KEY)) {
@@ -237,16 +242,16 @@ async function handleDiscordWebhook(request: Request, env: Env, ctx: ExecutionCo
 
     // Defer the response immediately (shows "thinking...")
     // Then process in the background
-    ctx.waitUntil(processDiscordInteraction(body, env));
+    ctx.waitUntil(processDiscordInteraction(body, env, traceId));
 
     return json({ type: InteractionCallbackType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
   } catch (error) {
-    log('error', 'Discord webhook error', { error: String(error), url: request.url });
+    log('error', 'Discord webhook error', { error: String(error) }, { traceId, handler: 'discord' });
     return new Response('', { status: 200 });
   }
 }
 
-async function processDiscordInteraction(interaction: DiscordInteraction, env: Env): Promise<void> {
+async function processDiscordInteraction(interaction: DiscordInteraction, env: Env, traceId: string): Promise<void> {
   const msg = parseDiscordInteraction(interaction);
   if (!msg) {
     await editDiscordInteractionResponse(
@@ -310,6 +315,8 @@ async function processDiscordInteraction(interaction: DiscordInteraction, env: E
     const doId = env.CONVERSATION_DO.idFromName(sessionKey);
     const stub = env.CONVERSATION_DO.get(doId);
 
+    log('info', 'DO dispatch', { sessionKey }, { traceId, handler: 'do-dispatch' });
+
     // DO sends the Discord reply directly — await ensures RPC is dispatched
     await stub.message({
       text: msg.text,
@@ -332,7 +339,7 @@ async function processDiscordInteraction(interaction: DiscordInteraction, env: E
       },
     });
   } catch (error) {
-    log('error', 'Error processing Discord interaction', { error: String(error), senderId: msg.senderId });
+    log('error', 'Error processing Discord interaction', { error: String(error), senderId: msg.senderId }, { traceId, handler: 'discord' });
     try {
       await editDiscordInteractionResponse(
         env.DISCORD_APP_ID, interaction.token, 'An error occurred. Please try again.', env.DISCORD_BOT_TOKEN,

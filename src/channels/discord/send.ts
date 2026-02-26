@@ -1,4 +1,5 @@
 import { InteractionCallbackType } from './types.ts';
+import { log } from '../../utils/logger.ts';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const MAX_MESSAGE_LENGTH = 2000;
@@ -37,6 +38,8 @@ export async function editDiscordInteractionResponse(
   if (!editResponse.ok) {
     const error = await editResponse.text();
     console.error(`Discord edit response failed: ${editResponse.status} ${error}`);
+  } else {
+    log('info', 'Message sent', { channel: 'discord', appId }, { handler: 'discord-send' });
   }
 
   // Send remaining chunks as followup messages
