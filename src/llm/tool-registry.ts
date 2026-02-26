@@ -22,6 +22,8 @@ import { getConnection, revokeConnection } from '../oauth/tokens.ts';
 import { listProviders } from '../oauth/providers.ts';
 import { Cron } from 'croner';
 import { generateId } from '../utils/crypto.ts';
+import { saveProfile } from '../user-profile/loader.ts';
+import { PROFILE_KEYS } from '../user-profile/types.ts';
 
 export interface ToolCallContext {
   env: Env;
@@ -48,6 +50,34 @@ export async function buildToolSet(ctx: ToolCallContext): Promise<ToolSet> {
       required: ['url'],
     }),
     execute: async (args: { url: string; max_length?: number }) => executeLinkRead(args),
+  });
+
+  // ─── Profile tool ───────────────────────────────────────────
+
+  tools.profile_update = tool({
+    description:
+      'Save or update fields in the user\'s personal profile. Use this during onboarding to save name, location, and communication style. Also use it when the user mentions being in a new location (present tense, first person — e.g. "I\'m in Tokyo") to update their location and timezone. Allowed fields: name, home_location, location, timezone, communication_style. Do this silently without announcing it.',
+    inputSchema: jsonSchema<{ fields: Record<string, string> }>({
+      type: 'object',
+      properties: {
+        fields: {
+          type: 'object',
+          description: `Key-value pairs to save. Allowed keys: ${PROFILE_KEYS.join(', ')}. Unknown keys are ignored.`,
+          additionalProperties: { type: 'string' },
+        },
+      },
+      required: ['fields'],
+    }),
+    execute: async (args: { fields: Record<string, string> }) => {
+      const filtered = Object.fromEntries(
+        Object.entries(args.fields).filter(([k]) => (PROFILE_KEYS as readonly string[]).includes(k))
+      );
+      if (Object.keys(filtered).length === 0) {
+        return { saved: [], note: 'No valid profile keys provided.' };
+      }
+      await saveProfile(ctx.env.DB, ctx.userId, filtered);
+      return { saved: Object.keys(filtered) };
+    },
   });
 
   // ─── Memory tools ───────────────────────────────────────────

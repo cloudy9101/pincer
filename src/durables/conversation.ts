@@ -15,6 +15,9 @@ import { editDiscordInteractionResponse, editDiscordOriginal } from '../channels
 import { getAgent } from '../config/loader.ts';
 import { getCanonicalId } from '../routing/identity-links.ts';
 import { isAllowed } from '../security/allowlist.ts';
+import { loadProfile, saveProfile } from '../user-profile/loader.ts';
+import { formatProfileSection } from '../user-profile/prompt.ts';
+import { ONBOARDING_SYSTEM_PROMPT } from '../user-profile/onboarding.ts';
 
 export interface ReplyDestination {
   channel: string;
@@ -193,6 +196,21 @@ export class ConversationSqlDO extends DurableObject<Env> {
       return { accepted: true };
     }
 
+    // Detect onboarding state: user has no name in profile
+    const profile = await loadProfile(this.env.DB, input.userId);
+    const needsOnboarding = !profile.name;
+
+    // Handle skip during onboarding
+    if (needsOnboarding) {
+      const lower = input.text.trim().toLowerCase();
+      if (lower === 'skip' || lower === '/start skip') {
+        await saveProfile(this.env.DB, input.userId, { name: '(skipped)' });
+        const skipReply = "No problem! What can I help you with?";
+        try { await this.sendReply(input.replyTo, skipReply); } catch { /* best effort */ }
+        return { accepted: true, text: skipReply };
+      }
+    }
+
     // Initialize state on first message
     if (!this.state_) {
       this.state_ = {
@@ -235,8 +253,14 @@ export class ConversationSqlDO extends DurableObject<Env> {
     const tools = await buildToolSet(toolCtx);
     const llmModel = getModel(model, this.env);
 
-    // Build system prompt with memories and skills
+    // Build system prompt with profile, memories and skills
     let systemPrompt = systemPromptBase;
+
+    const taskProfile = await loadProfile(this.env.DB, input.userId);
+    const profileSection = formatProfileSection(taskProfile, Date.now());
+    if (profileSection) {
+      systemPrompt = systemPrompt + profileSection;
+    }
 
     const memoryCtx: MemoryContext = {
       sessionKey: input.sessionKey,
@@ -339,10 +363,23 @@ export class ConversationSqlDO extends DurableObject<Env> {
         agentId: this.state_.agentId,
       };
 
-      let systemPrompt = this.state_.systemPrompt;
-      const memorySection = await retrieveMemories(this.env, userText, memoryCtx);
-      if (memorySection) {
-        systemPrompt = systemPrompt + memorySection;
+      const now = Date.now();
+      const profile = await loadProfile(this.env.DB, this.state_.userId);
+      const needsOnboarding = !profile.name;
+
+      let systemPrompt: string;
+      if (needsOnboarding) {
+        systemPrompt = ONBOARDING_SYSTEM_PROMPT;
+      } else {
+        systemPrompt = this.state_.systemPrompt;
+        const profileSection = formatProfileSection(profile, now);
+        if (profileSection) {
+          systemPrompt = systemPrompt + profileSection;
+        }
+        const memorySection = await retrieveMemories(this.env, userText, memoryCtx);
+        if (memorySection) {
+          systemPrompt = systemPrompt + memorySection;
+        }
       }
 
       const skills = await loadActiveSkills(this.env);
@@ -518,8 +555,17 @@ export class ConversationSqlDO extends DurableObject<Env> {
     const arg = parts.slice(1).join(' ').trim();
 
     switch (cmd) {
-      case '/start':
-        return `Hello ${input.senderName}! I'm your AI assistant. Just send me a message to get started.\n\nType /help to see available commands.`;
+      case '/start': {
+        const startProfile = await loadProfile(this.env.DB, input.userId);
+        if (startProfile.name && startProfile.name !== '(skipped)') {
+          return `Welcome back, ${startProfile.name}! Good to see you. What can I help you with?`;
+        }
+        // No profile yet — trigger onboarding by scheduling alarm immediately
+        await this.ctx.storage.put('pendingReplyTo', input.replyTo);
+        await this.ctx.storage.put('pendingSessionKey', input.sessionKey);
+        await this.ctx.storage.setAlarm(Date.now());
+        return null;
+      }
 
       case '/help':
         return (
