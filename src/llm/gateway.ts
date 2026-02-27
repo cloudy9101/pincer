@@ -1,7 +1,7 @@
 import type { LanguageModel } from 'ai';
-import { createAnthropic } from '@ai-sdk/anthropic';
-import { createOpenAI } from '@ai-sdk/openai';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createAiGateway } from 'ai-gateway-provider';
+import { createAnthropic } from 'ai-gateway-provider/providers/anthropic';
+import { createUnified } from 'ai-gateway-provider/providers/unified';
 import type { Env } from '../env.ts';
 
 export function parseModelString(model: string): { provider: string; model: string } {
@@ -13,26 +13,17 @@ export function parseModelString(model: string): { provider: string; model: stri
 export function getModel(modelString: string, env: Env): LanguageModel {
   const { provider, model } = parseModelString(modelString);
 
-  switch (provider) {
-    case 'anthropic': {
-      const anthropic = createAnthropic({
-        apiKey: env.ANTHROPIC_API_KEY,
-      });
-      return anthropic(model);
-    }
-    case 'openai': {
-      const openai = createOpenAI({
-        apiKey: env.OPENAI_API_KEY,
-      });
-      return openai(model);
-    }
-    case 'google': {
-      const google = createGoogleGenerativeAI({
-        apiKey: env.GOOGLE_AI_API_KEY,
-      });
-      return google(model);
-    }
-    default:
-      throw new Error(`Unknown LLM provider: ${provider}`);
+  const aigateway = createAiGateway({
+    accountId: env.CF_ACCOUNT_ID,
+    gateway: env.CF_AIG_GATEWAY,
+    apiKey: env.CF_AIG_TOKEN,
+  });
+
+  if (provider === 'anthropic') {
+    // Use native Anthropic backend — preserves extended thinking providerOptions
+    return aigateway(createAnthropic()(model)) as LanguageModel;
   }
+
+  // All other providers (openai, google, etc.) via unified OpenAI-compat endpoint
+  return aigateway(createUnified()(`${provider}/${model}`)) as LanguageModel;
 }

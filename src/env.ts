@@ -19,10 +19,9 @@ export interface Env {
   // Vectorize
   MEMORY: VectorizeIndex;
 
-  // Secrets - LLM providers
-  ANTHROPIC_API_KEY: string;
-  OPENAI_API_KEY?: string;
-  GOOGLE_AI_API_KEY?: string;
+  // Secrets - AI Gateway (BYOK — provider keys stored in AI Gateway dashboard)
+  CF_AIG_TOKEN: string;
+  CF_AIG_GATEWAY: string;
 
   // Secrets - Telegram
   TELEGRAM_BOT_TOKEN: string;
@@ -54,6 +53,4 @@ export interface Env {
   CF_ACCESS_CLIENT_ID?: string;
   CF_ACCESS_CLIENT_SECRET?: string;
 
-  // AI Gateway
-  AI_GATEWAY_ENDPOINT?: string;
 }

@@ -7,17 +7,16 @@
     "dev": "wrangler dev",
     "deploy": "cd admin && bun run build && cd .. && wrangler deploy",
     "deploy:worker": "wrangler deploy",
-    "migrate:local": "wrangler d1 execute pincer-db --local --file=migrations/0001_initial.sql",
-    "migrate:remote": "wrangler d1 execute pincer-db --remote --file=migrations/0001_initial.sql",
+    "migrate:local": "wrangler d1 execute pincer-db --local",
+    "migrate:remote": "wrangler d1 execute pincer-db --remote",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.43",
-    "@ai-sdk/google": "^3.0.29",
     "@ai-sdk/mcp": "^1.0.21",
-    "@ai-sdk/openai": "^3.0.28",
     "@anthropic-ai/sdk": "^0.74.0",
     "ai": "^6.0.85",
+    "ai-gateway-provider": "^3.1.1",
     "croner": "^10.0.1"
   },
   "devDependencies": {
