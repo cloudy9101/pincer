@@ -4,6 +4,7 @@ import type { ModelMessage } from 'ai';
 import type { Env } from '../env.ts';
 import { getModel, parseModelString } from '../llm/gateway.ts';
 import { buildToolSet, type ToolCallContext } from '../llm/tool-registry.ts';
+import { classifyLLMError, sleep, type LLMErrorInfo } from '../llm/errors.ts';
 import { DEFAULTS } from '../config/defaults.ts';
 import { retrieveMemories } from '../memory/retrieve.ts';
 import { extractAndStoreMemories } from '../memory/auto-extract.ts';
@@ -290,36 +291,55 @@ export class ConversationSqlDO extends DurableObject<Env> {
     };
     const providerOptions = buildProviderOptions(sessionState);
 
-    const result = await generateText({
-      model: llmModel,
-      system: systemPrompt,
-      messages: [{ role: 'user' as const, content: input.text }],
-      tools,
-      stopWhen: stepCountIs(MAX_TOOL_STEPS),
-      maxOutputTokens: maxTokens,
-      temperature: thinkingLevel !== 'none' ? undefined : temperature,
-      providerOptions,
-      maxRetries: 0,
-    });
+    // Retry loop for transient provider errors (rate-limit / overloaded)
+    let attempt = 0;
+    while (true) {
+      try {
+        const result = await generateText({
+          model: llmModel,
+          system: systemPrompt,
+          messages: [{ role: 'user' as const, content: input.text }],
+          tools,
+          stopWhen: stepCountIs(MAX_TOOL_STEPS),
+          maxOutputTokens: maxTokens,
+          temperature: thinkingLevel !== 'none' ? undefined : temperature,
+          providerOptions,
+          maxRetries: 0,
+        });
 
-    // Count tool calls across all steps
-    let toolCallCount = 0;
-    for (const msg of result.response.messages) {
-      if (msg.role === 'assistant' && Array.isArray(msg.content)) {
-        for (const part of msg.content) {
-          if (typeof part === 'object' && 'type' in part && part.type === 'tool-call') {
-            toolCallCount++;
+        // Count tool calls across all steps
+        let toolCallCount = 0;
+        for (const msg of result.response.messages) {
+          if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+            for (const part of msg.content) {
+              if (typeof part === 'object' && 'type' in part && part.type === 'tool-call') {
+                toolCallCount++;
+              }
+            }
           }
         }
+
+        // Log usage but don't persist history (ephemeral)
+        const inputTokens = result.totalUsage.inputTokens ?? 0;
+        const outputTokens = result.totalUsage.outputTokens ?? 0;
+        await this.logUsage(input.sessionKey, model, inputTokens, outputTokens);
+
+        return { text: result.text, toolCallCount };
+      } catch (err) {
+        const info = classifyLLMError(err);
+        if ((info.kind === 'rate_limit' || info.kind === 'overloaded') && attempt < DEFAULTS.llmMaxRetries) {
+          attempt++;
+          const backoff = Math.min(
+            (info.retryAfterSeconds ?? 0) * 1000 || DEFAULTS.llmRetryBaseDelayMs * Math.pow(2, attempt - 1),
+            DEFAULTS.llmRetryMaxDelayMs,
+          );
+          console.warn(`runTask: ${info.kind} (attempt ${attempt}/${DEFAULTS.llmMaxRetries}), retrying in ${Math.ceil(backoff / 1000)}s…`);
+          await sleep(backoff);
+          continue;
+        }
+        throw err;
       }
     }
-
-    // Log usage but don't persist history (ephemeral)
-    const inputTokens = result.totalUsage.inputTokens ?? 0;
-    const outputTokens = result.totalUsage.outputTokens ?? 0;
-    await this.logUsage(input.sessionKey, model, inputTokens, outputTokens);
-
-    return { text: result.text, toolCallCount };
   }
 
   override async alarm(): Promise<void> {
@@ -390,84 +410,132 @@ export class ConversationSqlDO extends DurableObject<Env> {
 
       const providerOptions = buildProviderOptions(this.state_);
 
-      const result = streamText({
-        model,
-        system: systemPrompt,
-        messages: this.history,
-        tools,
-        stopWhen: stepCountIs(MAX_TOOL_STEPS),
-        maxOutputTokens: this.state_.maxTokens,
-        temperature: this.state_.thinkingLevel !== 'none' ? undefined : this.state_.temperature,
-        providerOptions,
-        maxRetries: 0,
-      });
+      // ── LLM call with retry / auto-compact loop ──
+      let didCompactForContext = false;
+      let attempt = 0;
 
-      // Stream partial text to user via periodic edits
-      let accumulatedText = '';
-      let lastEditTime = 0;
-      let sentMessageId: string | undefined; // Telegram message ID for edits
-      let lastEditedText = ''; // Track what we last sent to avoid redundant edits
+      while (true) {
+        try {
+          const result = streamText({
+            model,
+            system: systemPrompt,
+            messages: this.history,
+            tools,
+            stopWhen: stepCountIs(MAX_TOOL_STEPS),
+            maxOutputTokens: this.state_.maxTokens,
+            temperature: this.state_.thinkingLevel !== 'none' ? undefined : this.state_.temperature,
+            providerOptions,
+            maxRetries: 0,
+          });
 
-      for await (const part of result.fullStream) {
-        if (part.type === 'text-delta') {
-          accumulatedText += part.text;
+          // Stream partial text to user via periodic edits
+          let accumulatedText = '';
+          let lastEditTime = 0;
+          let sentMessageId: string | undefined;
+          let lastEditedText = '';
 
-          const now = Date.now();
-          if (now - lastEditTime >= STREAM_EDIT_INTERVAL_MS && accumulatedText.length > 0) {
-            lastEditTime = now;
-            try {
-              if (!sentMessageId && accumulatedText !== lastEditedText) {
-                sentMessageId = await this.sendInitialPartial(replyTo, accumulatedText);
-                lastEditedText = accumulatedText;
-              } else if (sentMessageId && accumulatedText !== lastEditedText) {
-                await this.editPartialReply(replyTo, accumulatedText, sentMessageId);
-                lastEditedText = accumulatedText;
+          for await (const part of result.fullStream) {
+            if (part.type === 'text-delta') {
+              accumulatedText += part.text;
+
+              const ts = Date.now();
+              if (ts - lastEditTime >= STREAM_EDIT_INTERVAL_MS && accumulatedText.length > 0) {
+                lastEditTime = ts;
+                try {
+                  if (!sentMessageId && accumulatedText !== lastEditedText) {
+                    sentMessageId = await this.sendInitialPartial(replyTo, accumulatedText);
+                    lastEditedText = accumulatedText;
+                  } else if (sentMessageId && accumulatedText !== lastEditedText) {
+                    await this.editPartialReply(replyTo, accumulatedText, sentMessageId);
+                    lastEditedText = accumulatedText;
+                  }
+                } catch (e) {
+                  console.error('Partial edit failed:', e);
+                }
               }
-            } catch (e) {
-              console.error('Partial edit failed:', e);
             }
           }
-        }
-      }
 
-      clearInterval(typingInterval);
+          clearInterval(typingInterval);
 
-      // Final text from the stream
-      const finalText = await result.text;
+          const finalText = await result.text;
 
-      // Final delivery: if we already sent a partial message, do a final edit.
-      // Otherwise fall through to sendReply for the complete message.
-      if (finalText) {
-        try {
-          if (sentMessageId && finalText !== lastEditedText) {
-            await this.editPartialReply(replyTo, finalText, sentMessageId);
-          } else if (!sentMessageId) {
-            await this.sendReply(replyTo, finalText);
+          if (finalText) {
+            try {
+              if (sentMessageId && finalText !== lastEditedText) {
+                await this.editPartialReply(replyTo, finalText, sentMessageId);
+              } else if (!sentMessageId) {
+                await this.sendReply(replyTo, finalText);
+              }
+            } catch (e) {
+              console.error('Failed to send reply:', e);
+            }
           }
-        } catch (e) {
-          console.error('Failed to send reply:', e);
+
+          // Persist
+          const response = await result.response;
+          this.appendMessages(response.messages as ModelMessage[]);
+          this.state_.messageCount += response.messages.length;
+          this.saveState(this.state_);
+
+          const totalUsage = await result.totalUsage;
+          const inputTokens = totalUsage.inputTokens ?? 0;
+          const outputTokens = totalUsage.outputTokens ?? 0;
+          await this.logUsage(sessionKey, this.state_.model, inputTokens, outputTokens);
+
+          if (DEFAULTS.memoryAutoExtractEnabled && finalText) {
+            await extractAndStoreMemories(this.env, model, userText, finalText, memoryCtx);
+          }
+
+          // Success — exit retry loop
+          break;
+        } catch (llmError) {
+          const info = classifyLLMError(llmError);
+
+          // ── Context length exceeded → auto-compact and retry once ──
+          if (info.kind === 'context_length' && !didCompactForContext && this.history.length > DEFAULTS.compactionKeepRecent) {
+            didCompactForContext = true;
+            console.warn('Context length exceeded, auto-compacting and retrying…');
+            try {
+              await this.sendReply(replyTo, '⏳ Message too long for the model — compacting conversation history and retrying…');
+            } catch { /* best effort */ }
+            try {
+              await this.compact();
+            } catch (compactErr) {
+              console.error('Auto-compact for context limit failed:', compactErr);
+              throw llmError; // Can't recover — re-throw original
+            }
+            continue; // retry with compacted history
+          }
+
+          // ── Rate limit or overloaded → backoff and retry ──
+          if ((info.kind === 'rate_limit' || info.kind === 'overloaded') && attempt < DEFAULTS.llmMaxRetries) {
+            attempt++;
+            const backoff = Math.min(
+              (info.retryAfterSeconds ?? 0) * 1000 || DEFAULTS.llmRetryBaseDelayMs * Math.pow(2, attempt - 1),
+              DEFAULTS.llmRetryMaxDelayMs,
+            );
+            const waitSec = Math.ceil(backoff / 1000);
+            const label = info.kind === 'rate_limit' ? 'Rate limited' : 'Provider temporarily overloaded';
+            console.warn(`${label} (attempt ${attempt}/${DEFAULTS.llmMaxRetries}), retrying in ${waitSec}s…`);
+            try {
+              await this.sendReply(replyTo, `⏳ ${label} by the AI provider — retrying in ~${waitSec}s (attempt ${attempt}/${DEFAULTS.llmMaxRetries})…`);
+            } catch { /* best effort */ }
+            await sleep(backoff);
+            continue; // retry
+          }
+
+          // ── Unrecoverable — re-throw to outer catch ──
+          throw llmError;
         }
-      }
-
-      // Persist
-      const response = await result.response;
-      this.appendMessages(response.messages as ModelMessage[]);
-      this.state_.messageCount += response.messages.length;
-      this.saveState(this.state_);
-
-      const totalUsage = await result.totalUsage;
-      const inputTokens = totalUsage.inputTokens ?? 0;
-      const outputTokens = totalUsage.outputTokens ?? 0;
-      await this.logUsage(sessionKey, this.state_.model, inputTokens, outputTokens);
-
-      if (DEFAULTS.memoryAutoExtractEnabled && finalText) {
-        await extractAndStoreMemories(this.env, model, userText, finalText, memoryCtx);
       }
     } catch (e) {
       clearInterval(typingInterval);
+      const info = classifyLLMError(e);
       console.error('alarm processMessage failed:', e);
       try {
-        await this.sendReply(replyTo, 'An error occurred while processing your message. Please try again.');
+        const userMsg = buildUserErrorMessage(info);
+        await this.sendReply(replyTo, userMsg);
       } catch { /* best effort */ }
     }
   }
@@ -747,6 +815,20 @@ export class ConversationSqlDO extends DurableObject<Env> {
     } catch (e) {
       console.error('Failed to log usage:', e);
     }
+  }
+}
+
+/** Build a user-friendly error message based on the classified LLM error. */
+function buildUserErrorMessage(info: LLMErrorInfo): string {
+  switch (info.kind) {
+    case 'rate_limit':
+      return 'The AI provider is rate-limiting requests right now. Please wait a moment and try again.';
+    case 'context_length':
+      return 'The conversation has grown too long for the model to handle. Try /compact to summarize older messages, or /reset to start fresh.';
+    case 'overloaded':
+      return 'The AI provider is temporarily overloaded. Please try again in a minute or two.';
+    default:
+      return 'An error occurred while processing your message. Please try again.';
   }
 }
 

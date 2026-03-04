@@ -21,4 +21,10 @@ Location tracking: if the user mentions they are currently in a new place (prese
   fetchTimeoutMs: 30_000,
   mcpConnectTimeoutMs: 15_000,
   mcpToolExecTimeoutMs: 30_000,
+  /** Max retries for rate-limit (429) or overloaded (529/503) errors */
+  llmMaxRetries: 3,
+  /** Base delay in ms for exponential backoff (doubles each retry) */
+  llmRetryBaseDelayMs: 2_000,
+  /** Cap on backoff delay in ms */
+  llmRetryMaxDelayMs: 30_000,
 } as const;
