@@ -25,6 +25,10 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: 'status', description: 'Show bot status' },
 ];
 
+/** Hash of the current command list — changes when BOT_COMMANDS is edited. */
+const COMMANDS_VERSION = BOT_COMMANDS.map(c => c.command).join(',');
+const KV_KEY = 'tg:commands_registered';
+
 /**
  * Register bot commands with Telegram so they appear in the "/" menu.
  * Calls the setMyCommands API for the default scope.
@@ -42,4 +46,24 @@ export async function registerTelegramCommands(
 
   const data = (await response.json()) as { ok: boolean; description?: string };
   return data;
+}
+
+/**
+ * Lazily register commands on the first webhook request after a deploy.
+ * Uses KV to store the version so it only calls setMyCommands once per
+ * command-list change. Safe to call on every request — it's a single KV read.
+ */
+export async function ensureCommandsRegistered(
+  cache: KVNamespace,
+  botToken: string,
+  apiBase?: string,
+): Promise<void> {
+  const stored = await cache.get(KV_KEY);
+  if (stored === COMMANDS_VERSION) return;
+
+  const result = await registerTelegramCommands(botToken, apiBase);
+  if (result.ok) {
+    // Cache for 30 days — re-registers after deploy if commands changed
+    await cache.put(KV_KEY, COMMANDS_VERSION, { expirationTtl: 60 * 60 * 24 * 30 });
+  }
 }

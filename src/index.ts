@@ -20,7 +20,7 @@ import { getMCPServer } from './mcp/loader.ts';
 import { discoverMCPTools } from './mcp/client.ts';
 import type { IncomingMessage } from './channels/types.ts';
 import { downloadTelegramFile } from './channels/telegram/files.ts';
-import { registerTelegramCommands } from './channels/telegram/commands.ts';
+import { registerTelegramCommands, ensureCommandsRegistered } from './channels/telegram/commands.ts';
 import type { InlineImage } from './durables/conversation.ts';
 import { handleConnect, handleCallback } from './oauth/flow.ts';
 import { revokeConnection } from './oauth/tokens.ts';
@@ -107,6 +107,8 @@ async function handleTelegramWebhook(request: Request, env: Env, ctx: ExecutionC
       return new Response('OK'); // Not a message we handle
     }
 
+    // Register bot commands lazily (single KV read; no-op after first success)
+    ctx.waitUntil(ensureCommandsRegistered(env.CACHE, env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_API_BASE));
     // Handle in background so we can return 200 immediately
     ctx.waitUntil(processTelegramMessage(msg, env, traceId));
     return new Response('OK');
