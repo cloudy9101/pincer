@@ -20,6 +20,7 @@ import { getMCPServer } from './mcp/loader.ts';
 import { discoverMCPTools } from './mcp/client.ts';
 import type { IncomingMessage } from './channels/types.ts';
 import { downloadTelegramFile } from './channels/telegram/files.ts';
+import { registerTelegramCommands } from './channels/telegram/commands.ts';
 import type { InlineImage } from './durables/conversation.ts';
 import { handleConnect, handleCallback } from './oauth/flow.ts';
 import { revokeConnection } from './oauth/tokens.ts';
@@ -742,6 +743,12 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     const jobId = path.split('/').pop()!;
     await env.DB.prepare('DELETE FROM cron_jobs WHERE id = ?').bind(jobId).run();
     return json({ ok: true });
+  }
+
+  // Telegram command registration
+  if (path === '/admin/telegram/commands' && request.method === 'POST') {
+    const result = await registerTelegramCommands(env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_API_BASE);
+    return json(result);
   }
 
   return new Response('Not Found', { status: 404 });
