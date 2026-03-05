@@ -1,8 +1,5 @@
 /**
- * Telegram Bot command registration via setMyCommands API.
- *
- * Call registerTelegramCommands() to push the bot's slash-command menu
- * so users see autocomplete when typing "/" in Telegram.
+ * Telegram Bot setup: webhook registration and command menu.
  */
 
 const DEFAULT_TELEGRAM_API = 'https://api.telegram.org';
@@ -66,4 +63,48 @@ export async function ensureCommandsRegistered(
     // Cache for 30 days — re-registers after deploy if commands changed
     await cache.put(KV_KEY, COMMANDS_VERSION, { expirationTtl: 60 * 60 * 24 * 30 });
   }
+}
+
+/**
+ * Register the Telegram webhook so Telegram sends updates to this Worker.
+ * The webhook URL is derived from the incoming request's origin.
+ */
+export async function setTelegramWebhook(
+  workerOrigin: string,
+  botToken: string,
+  webhookSecret: string,
+  apiBase?: string,
+): Promise<{ ok: boolean; description?: string }> {
+  const base = (apiBase ?? DEFAULT_TELEGRAM_API) + '/bot';
+  const webhookUrl = `${workerOrigin}/webhook/telegram`;
+
+  const response = await fetch(`${base}${botToken}/setWebhook`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: webhookUrl,
+      secret_token: webhookSecret,
+      allowed_updates: ['message', 'edited_message'],
+    }),
+  });
+
+  const data = (await response.json()) as { ok: boolean; description?: string };
+  return data;
+}
+
+/**
+ * Full Telegram setup: register webhook + set bot commands.
+ * Called from the admin API — derives the webhook URL from the request origin.
+ */
+export async function setupTelegram(
+  workerOrigin: string,
+  botToken: string,
+  webhookSecret: string,
+  apiBase?: string,
+): Promise<{ webhook: { ok: boolean; description?: string }; commands: { ok: boolean; description?: string } }> {
+  const [webhook, commands] = await Promise.all([
+    setTelegramWebhook(workerOrigin, botToken, webhookSecret, apiBase),
+    registerTelegramCommands(botToken, apiBase),
+  ]);
+  return { webhook, commands };
 }
