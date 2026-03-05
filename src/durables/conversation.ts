@@ -293,8 +293,6 @@ export class ConversationSqlDO extends DurableObject<Env> {
       maxTokens,
       messageCount: 0,
     };
-    const providerOptions = buildProviderOptions(sessionState);
-
     // Retry loop for transient provider errors (rate-limit / overloaded)
     let attempt = 0;
     while (true) {
@@ -307,7 +305,6 @@ export class ConversationSqlDO extends DurableObject<Env> {
           stopWhen: stepCountIs(MAX_TOOL_STEPS),
           maxOutputTokens: maxTokens,
           temperature: thinkingLevel !== 'none' ? undefined : temperature,
-          providerOptions,
           maxRetries: 0,
         });
 
@@ -416,8 +413,6 @@ export class ConversationSqlDO extends DurableObject<Env> {
         systemPrompt = systemPrompt + skillsSection;
       }
 
-      const providerOptions = buildProviderOptions(this.state_);
-
       // ── LLM call with retry / auto-compact loop ──
       let didCompactForContext = false;
       let attempt = 0;
@@ -432,7 +427,6 @@ export class ConversationSqlDO extends DurableObject<Env> {
             stopWhen: stepCountIs(MAX_TOOL_STEPS),
             maxOutputTokens: this.state_.maxTokens,
             temperature: this.state_.thinkingLevel !== 'none' ? undefined : this.state_.temperature,
-            providerOptions,
             maxRetries: 0,
           });
 
@@ -844,20 +838,3 @@ function buildUserErrorMessage(info: LLMErrorInfo): string {
   }
 }
 
-function buildProviderOptions(state: SessionState) {
-  const { provider } = parseModelString(state.model);
-
-  if (provider === 'anthropic' && state.thinkingLevel && state.thinkingLevel !== 'none') {
-    const budgets: Record<string, number> = { low: 2048, medium: 8192, high: 32768 };
-    return {
-      anthropic: {
-        thinking: {
-          type: 'enabled' as const,
-          budgetTokens: budgets[state.thinkingLevel] ?? budgets.medium!,
-        },
-      },
-    };
-  }
-
-  return undefined;
-}
