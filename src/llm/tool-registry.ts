@@ -24,6 +24,8 @@ import { Cron } from 'croner';
 import { generateId } from '../utils/crypto.ts';
 import { saveProfile } from '../user-profile/loader.ts';
 import { PROFILE_KEYS } from '../user-profile/types.ts';
+import { CATALOG, getCatalogEntry } from '../skills/catalog.ts';
+import { updateSkillSecrets } from '../skills/installer.ts';
 
 export interface ToolCallContext {
   env: Env;
@@ -376,6 +378,87 @@ export async function buildToolSet(ctx: ToolCallContext): Promise<ToolSet> {
           status: s.status,
         }))
       );
+    },
+  });
+
+  tools.catalog_list = tool({
+    description:
+      'List all available skills in the catalog, both installed and not yet installed. Use this when a user asks what you can do, wants to add a capability (e.g. "can you check my calendar?"), or asks what skills are available. Shows name, description, auth type, and whether it is currently installed.',
+    inputSchema: jsonSchema<Record<string, never>>({
+      type: 'object',
+      properties: {},
+    }),
+    execute: async () => {
+      const installed = await loadActiveSkills(ctx.env);
+      const installedNames = new Set(installed.map(s => s.name));
+      return JSON.stringify(
+        CATALOG.map(e => ({
+          name: e.name,
+          displayName: e.displayName,
+          description: e.description,
+          authType: e.authType,
+          oauthProvider: e.oauthProvider ?? null,
+          installed: installedNames.has(e.name),
+          needsSecrets: e.secretFields.length > 0,
+        }))
+      );
+    },
+  });
+
+  tools.catalog_install = tool({
+    description:
+      'Install a skill from the built-in catalog by name. Use this when the user asks to set up or enable a catalog skill (e.g. "set up weather", "enable GitHub"). For skills that need an API key, the tool returns the required key name so you can ask the user for it and then call catalog_set_secret. For OAuth skills, call oauth_connect after installing.',
+    inputSchema: jsonSchema<{ name: string }>({
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Catalog skill name (e.g. "weather", "github")' },
+      },
+      required: ['name'],
+    }),
+    execute: async (args: { name: string }) => {
+      const entry = getCatalogEntry(args.name);
+      if (!entry) {
+        return JSON.stringify({ error: `"${args.name}" is not in the catalog. Call catalog_list to see available skills.` });
+      }
+      try {
+        const skill = await installSkill(ctx.env, { content: entry.content });
+        return JSON.stringify({
+          installed: true,
+          name: skill.name,
+          authType: skill.authType,
+          secretFields: entry.secretFields,
+          oauthProvider: entry.oauthProvider ?? null,
+          nextStep: entry.secretFields.length > 0
+            ? `Ask the user for their ${entry.secretFields.map(f => f.label).join(' and ')}, then call catalog_set_secret.`
+            : entry.authType === 'oauth'
+              ? `Call oauth_connect with provider="${entry.oauthProvider}" to link the user's account.`
+              : 'Skill is ready to use.',
+        });
+      } catch (e) {
+        return JSON.stringify({ error: `Install failed: ${e instanceof Error ? e.message : String(e)}` });
+      }
+    },
+  });
+
+  tools.catalog_set_secret = tool({
+    description:
+      'Set an API key or secret for a catalog skill that was just installed. Call this after catalog_install returns secretFields and the user has provided the value.',
+    inputSchema: jsonSchema<{ skill: string; key: string; value: string }>({
+      type: 'object',
+      properties: {
+        skill: { type: 'string', description: 'Skill name' },
+        key: { type: 'string', description: 'Secret key name (as returned by catalog_install)' },
+        value: { type: 'string', description: 'The secret value provided by the user' },
+      },
+      required: ['skill', 'key', 'value'],
+    }),
+    execute: async (args: { skill: string; key: string; value: string }) => {
+      try {
+        await updateSkillSecrets(ctx.env, args.skill, { [args.key]: args.value });
+        return JSON.stringify({ ok: true, message: `Secret "${args.key}" saved for skill "${args.skill}". The skill is now ready to use.` });
+      } catch (e) {
+        return JSON.stringify({ error: `Failed to save secret: ${e instanceof Error ? e.message : String(e)}` });
+      }
     },
   });
 

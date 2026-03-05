@@ -2,7 +2,7 @@ import { getToken, clearToken } from './auth';
 import type {
   Agent, Skill, SkillSecretKey, Session, SessionMessage,
   AllowlistEntry, ConfigEntry, StatusResponse, UsageResponse,
-  MCPServer, OAuthConnection,
+  MCPServer, OAuthConnection, CatalogSkill,
 } from './types';
 
 function authHeaders(): Record<string, string> {
@@ -74,3 +74,8 @@ export const listMCP = () => request<MCPServer[]>('GET', '/admin/mcp');
 // OAuth
 export const listOAuth = () => request<OAuthConnection[]>('GET', '/admin/oauth');
 export const revokeOAuth = (id: string) => request<void>('DELETE', `/admin/oauth/${id}`);
+
+// Skill catalog
+export const listCatalog = () => request<CatalogSkill[]>('GET', '/admin/skills/catalog');
+export const installCatalogSkill = (name: string, secrets?: Record<string, string>) =>
+  request<{ ok: boolean; name: string }>('POST', `/admin/skills/catalog/${name}/install`, { secrets: secrets ?? {} });

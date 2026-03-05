@@ -67,6 +67,8 @@ export function parseSkillContent(content: string): { frontmatter: SkillFrontmat
       param_name: auth.param_name,
       username_secret: auth.username_secret,
       password_secret: auth.password_secret,
+      provider: auth.provider,
+      scopes: auth.scopes,
     };
   }
 
