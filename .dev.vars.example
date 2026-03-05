@@ -1,0 +1,70 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Pincer Gateway — local development secrets
+#
+# Copy this file to `.dev.vars` and fill in the values.
+# Wrangler loads `.dev.vars` automatically during `wrangler dev`.
+#
+# For production, set secrets with `wrangler secret put <NAME>`.
+# Never commit `.dev.vars` — it is listed in .gitignore.
+#
+# Generate random tokens:  openssl rand -hex 32
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Required ──────────────────────────────────────────────────────────────────
+
+# A strong random string used to authenticate the admin dashboard and API.
+# Generate:  openssl rand -hex 32
+ADMIN_AUTH_TOKEN=
+
+# 32-byte hex key used to encrypt skill secrets and OAuth tokens at rest.
+# Generate:  openssl rand -hex 32
+ENCRYPTION_KEY=
+
+# ── Telegram ──────────────────────────────────────────────────────────────────
+# Create a bot with @BotFather (https://t.me/BotFather) to get these.
+
+# Bot token provided by @BotFather (e.g. 123456:ABC-DEF…)
+TELEGRAM_BOT_TOKEN=
+
+# Random secret sent with every Telegram webhook request for verification.
+# Generate:  openssl rand -hex 32
+TELEGRAM_WEBHOOK_SECRET=
+
+# ── Discord ───────────────────────────────────────────────────────────────────
+# Create an app at https://discord.com/developers/applications.
+# Leave blank if you are not using the Discord integration.
+
+# Ed25519 public key — found in General Information tab.
+DISCORD_PUBLIC_KEY=
+
+# Bot token — found in the Bot tab (Reset Token).
+DISCORD_BOT_TOKEN=
+
+# Application ID — found in General Information tab.
+DISCORD_APP_ID=
+
+# ── OAuth Providers (optional) ────────────────────────────────────────────────
+# Enable these to let users connect their external accounts to the bot.
+
+# Google — https://console.cloud.google.com/apis/credentials
+GOOGLE_OAUTH_CLIENT_ID=
+GOOGLE_OAUTH_CLIENT_SECRET=
+
+# GitHub — https://github.com/settings/developers → OAuth Apps
+GITHUB_OAUTH_CLIENT_ID=
+GITHUB_OAUTH_CLIENT_SECRET=
+
+# Microsoft — https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps
+MICROSOFT_OAUTH_CLIENT_ID=
+MICROSOFT_OAUTH_CLIENT_SECRET=
+
+# ── Cloudflare API (optional) ─────────────────────────────────────────────────
+# Needed only if the bot uses Cloudflare-specific tools (e.g. purge cache, R2 ops).
+
+# API token with the permissions required by your use case.
+# Create at: https://dash.cloudflare.com/profile/api-tokens
+CF_API_TOKEN=
+
+# Cloudflare Access service token (for Zero Trust-protected internal endpoints).
+CF_ACCESS_CLIENT_ID=
+CF_ACCESS_CLIENT_SECRET=

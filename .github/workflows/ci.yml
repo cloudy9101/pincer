@@ -20,9 +20,6 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Build admin
-        working-directory: admin
-        run: bun install --frozen-lockfile && bun run build
-
       - name: Build
+        # wrangler build runs the [build] hook (admin SPA) before bundling
         run: bunx wrangler build

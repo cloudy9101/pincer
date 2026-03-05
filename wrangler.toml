@@ -1,3 +1,10 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Pincer Gateway — Cloudflare Workers configuration
+#
+# New deployment?  Click the Deploy button in README.md — Cloudflare provisions
+# all resources automatically.  For manual CLI setup see docs/deployment.md.
+# ──────────────────────────────────────────────────────────────────────────────
+
 name = "pincer-gateway"
 main = "src/index.ts"
 compatibility_date = "2025-12-01"
@@ -6,11 +13,14 @@ compatibility_flags = ["nodejs_compat"]
 [observability]
 enabled = true
 
+# ── Durable Objects ────────────────────────────────────────────────────────────
+
 [durable_objects]
 bindings = [
   { name = "CONVERSATION_DO", class_name = "ConversationSqlDO" },
 ]
 
+# Migration history — applied once in order; do not edit existing entries.
 [[migrations]]
 tag = "v1"
 new_classes = ["ConversationDO"]
@@ -23,30 +33,60 @@ new_sqlite_classes = ["ConversationSqlDO"]
 tag = "v3"
 deleted_classes = ["ConversationDO"]
 
+# ── D1 Database ────────────────────────────────────────────────────────────────
+# Create:  wrangler d1 create pincer-db
+# Paste the `database_id` from the command output below.
 
 [[d1_databases]]
 binding = "DB"
 database_name = "pincer-db"
-database_id = "233ae0e9-7d6a-4e96-989d-d25118917470"
+database_id = "YOUR_D1_DATABASE_ID"
 migrations_dir = "migrations"
+
+# ── KV Namespace ───────────────────────────────────────────────────────────────
+# Create:  wrangler kv namespace create CACHE
+# Paste the `id` from the command output below.
 
 [[kv_namespaces]]
 binding = "CACHE"
-id = "128c3204efa24e3a90a05d063804ac7d"
+id = "YOUR_KV_NAMESPACE_ID"
+
+# ── R2 Bucket ──────────────────────────────────────────────────────────────────
+# Create:  wrangler r2 bucket create pincer-media
+# No numeric ID needed — the bucket is referenced by name.
 
 [[r2_buckets]]
 binding = "MEDIA"
 bucket_name = "pincer-media"
 
+# ── Workers AI ─────────────────────────────────────────────────────────────────
+# Provides LLM inference at the edge — no external API key required.
+
 [ai]
 binding = "AI"
+
+# ── Vectorize ──────────────────────────────────────────────────────────────────
+# Create:  wrangler vectorize create pincer-memory --dimensions=1536 --metric=cosine
 
 [[vectorize]]
 binding = "MEMORY"
 index_name = "pincer-memory"
 
+# ── Scheduled Jobs ─────────────────────────────────────────────────────────────
+# Hourly trigger that processes cron jobs stored in D1.
+
 [triggers]
 crons = ["0 * * * *"]
+
+# ── Build ──────────────────────────────────────────────────────────────────────
+# Runs automatically before `wrangler deploy` (locally and in Workers Builds).
+# Bun is the package manager; bun.lock ensures reproducible installs.
+
+[build]
+command = "cd admin && bun install --frozen-lockfile && bun run build"
+
+# ── Admin SPA ──────────────────────────────────────────────────────────────────
+# Output of the build step above; served at /dashboard/.
 
 [assets]
 directory = "./admin/dist"

@@ -5,10 +5,9 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "cd admin && bun run build && cd .. && wrangler deploy",
-    "deploy:worker": "wrangler deploy",
-    "migrate:local": "wrangler d1 execute pincer-db --local",
-    "migrate:remote": "wrangler d1 execute pincer-db --remote",
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply DB --local",
+    "migrate:remote": "wrangler d1 migrations apply DB --remote",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
