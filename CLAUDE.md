@@ -1,106 +1,83 @@
+# Pincer Gateway — Dev Guide
 
-Default to using Bun instead of Node.js.
+## Runtime
 
-- Use `bun <file>` instead of `node <file>` or `ts-node <file>`
-- Use `bun test` instead of `jest` or `vitest`
-- Use `bun build <file.html|file.ts|file.css>` instead of `webpack` or `esbuild`
-- Use `bun install` instead of `npm install` or `yarn install` or `pnpm install`
-- Use `bun run <script>` instead of `npm run <script>` or `yarn run <script>` or `pnpm run <script>`
-- Use `bunx <package> <command>` instead of `npx <package> <command>`
-- Bun automatically loads .env, so don't use dotenv.
+This is a **Cloudflare Workers** project, not a Bun server. Worker source code runs in the Workers runtime, not in Bun. Do not use Bun-specific APIs (`Bun.serve`, `bun:sqlite`, `Bun.file`, etc.) in `src/`. Those APIs are unavailable in the Workers environment.
 
-## APIs
+Bun is used as the **local toolchain** (package manager, test runner, script runner).
 
-- `Bun.serve()` supports WebSockets, HTTPS, and routes. Don't use `express`.
-- `bun:sqlite` for SQLite. Don't use `better-sqlite3`.
-- `Bun.redis` for Redis. Don't use `ioredis`.
-- `Bun.sql` for Postgres. Don't use `pg` or `postgres.js`.
-- `WebSocket` is built-in. Don't use `ws`.
-- Prefer `Bun.file` over `node:fs`'s readFile/writeFile
-- Bun.$`ls` instead of execa.
+## Commands
 
-## Testing
-
-Use `bun test` to run tests.
-
-```ts#index.test.ts
-import { test, expect } from "bun:test";
-
-test("hello world", () => {
-  expect(1).toBe(1);
-});
+```bash
+bun run dev              # wrangler dev (local Worker)
+bun run deploy           # apply D1 migrations + wrangler deploy
+bun run typecheck        # tsc --noEmit (type-check Worker source)
+bun run migrate:local    # apply D1 migrations locally only
+bun run test:e2e         # Playwright end-to-end tests
 ```
 
-## Frontend
+Install dependencies: `bun install` (root) and `cd admin && bun install` (admin SPA).
 
-Use HTML imports with `Bun.serve()`. Don't use `vite`. HTML imports fully support React, CSS, Tailwind.
+## Project Structure
 
-Server:
-
-```ts#index.ts
-import index from "./index.html"
-
-Bun.serve({
-  routes: {
-    "/": index,
-    "/api/users/:id": {
-      GET: (req) => {
-        return new Response(JSON.stringify({ id: req.params.id }));
-      },
-    },
-  },
-  // optional websocket support
-  websocket: {
-    open: (ws) => {
-      ws.send("Hello, world!");
-    },
-    message: (ws, message) => {
-      ws.send(message);
-    },
-    close: (ws) => {
-      // handle close
-    }
-  },
-  development: {
-    hmr: true,
-    console: true,
-  }
-})
+```
+src/           # Cloudflare Worker source (TypeScript)
+admin/         # Admin SPA — React + Vite + Tailwind (built to admin/dist/)
+migrations/    # D1 SQL migrations (applied by wrangler)
+wrangler.toml  # Worker config — D1, KV, R2, Vectorize, AI bindings
 ```
 
-HTML files can import .tsx, .jsx or .js files directly and Bun's bundler will transpile & bundle automatically. `<link>` tags can point to stylesheets and Bun's CSS bundler will bundle.
+The admin SPA is built by `cd admin && bun run build` (Vite), which runs automatically before `wrangler deploy` via the `[build]` hook in `wrangler.toml`. Serve it locally with `cd admin && bun run dev`.
 
-```html#index.html
-<html>
-  <body>
-    <h1>Hello, world!</h1>
-    <script type="module" src="./frontend.tsx"></script>
-  </body>
-</html>
-```
+## Cloudflare Bindings (from `src/env.ts`)
 
-With the following `frontend.tsx`:
+| Binding | Type | Purpose |
+|---------|------|---------|
+| `CONVERSATION_DO` | Durable Object | Per-session SQLite-backed conversation state |
+| `DB` | D1 | Agents, skills, MCP servers, OAuth, sessions, memory, cron jobs |
+| `CACHE` | KV | Short-lived cache + rate limiting |
+| `MEDIA` | R2 | Uploaded media files |
+| `AI` | Workers AI | LLM inference, Whisper transcription, text embeddings |
+| `MEMORY` | Vectorize | Semantic memory index |
+| `ASSETS` | Fetcher | Admin SPA static files |
 
-```tsx#frontend.tsx
-import React from "react";
-import { createRoot } from "react-dom/client";
+## LLM / Workers AI
 
-// import .css files directly and it works
-import './index.css';
+All LLM calls go through the Workers AI binding via `workers-ai-provider`. Do **not** add `@ai-sdk/anthropic`, `@ai-sdk/openai`, or other provider SDKs — everything runs through Workers AI.
 
-const root = createRoot(document.body);
+Model string format: `workers-ai/<model-id>` (e.g. `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast`). Use `workers-ai/auto` to enable the Granite-based complexity router.
 
-export default function Frontend() {
-  return <h1>Hello, world!</h1>;
-}
+The AI SDK (`ai` package v6) is used for the LLM loop. Key patterns:
+- `streamText()` for conversational responses
+- `generateText()` for one-shot tasks and compaction
+- `stopWhen: stepCountIs(N)` for the tool-calling loop (max 20 steps)
+- `result.response.messages` to get messages to append to history
+- `result.totalUsage` for aggregate token counts
 
-root.render(<Frontend />);
-```
+## Durable Object Patterns
 
-Then, run index.ts
+`ConversationSqlDO` in `src/durables/conversation.ts`:
 
-```sh
-bun --hot ./index.ts
-```
+- Extend `DurableObject` from `cloudflare:workers`; use `override` keyword on `fetch()` and `alarm()`
+- `ctx.storage.sql.exec()` is **synchronous** — no `await`; cursor has `.toArray()`, `.one()`, iterator
+- `ctx.blockConcurrencyWhile(async () => { ... })` for initialization in the constructor
+- Messages arrive via `stub.message()` RPC; the DO schedules an alarm immediately and returns
+- The alarm handler does the actual LLM call and sends the reply
 
-For more information, read the Bun API docs in `node_modules/bun-types/docs/**.mdx`.
+## TypeScript
+
+- Types: `@cloudflare/workers-types` (imported via `tsconfig.json` — no explicit import needed in source)
+- No `node:` imports in Worker source unless covered by `nodejs_compat` flag
+- Run `bun run typecheck` before committing
+
+## D1 Migrations
+
+Add new migrations in `migrations/` as `000N_description.sql`. Apply locally with `bun run migrate:local`. They are applied to production automatically by `bun run deploy`.
+
+Do not edit existing migration files — always add a new one.
+
+## Security Conventions
+
+- Secrets stored in D1 are AES-256-GCM encrypted via `src/security/encryption.ts`
+- Admin routes require `Authorization: Bearer <ADMIN_AUTH_TOKEN>`
+- Never log secret values or encryption keys
