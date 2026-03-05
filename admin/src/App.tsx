@@ -9,6 +9,7 @@ import Catalog from './pages/Catalog';
 import Sessions from './pages/Sessions';
 import Allowlist from './pages/Allowlist';
 import Settings from './pages/Settings';
+import Setup from './pages/Setup';
 
 export default function App() {
   return (
@@ -28,6 +29,7 @@ export default function App() {
         <Route path="sessions" element={<Sessions />} />
         <Route path="allowlist" element={<Allowlist />} />
         <Route path="settings" element={<Settings />} />
+        <Route path="setup" element={<Setup />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

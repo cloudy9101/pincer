@@ -20,7 +20,7 @@ import { getMCPServer } from './mcp/loader.ts';
 import { discoverMCPTools } from './mcp/client.ts';
 import type { IncomingMessage } from './channels/types.ts';
 import { downloadTelegramFile } from './channels/telegram/files.ts';
-import { registerTelegramCommands, ensureCommandsRegistered, setupTelegram } from './channels/telegram/commands.ts';
+import { registerTelegramCommands, ensureCommandsRegistered, setupTelegram, getTelegramWebhookInfo } from './channels/telegram/commands.ts';
 import type { InlineImage } from './durables/conversation.ts';
 import { handleConnect, handleCallback } from './oauth/flow.ts';
 import { revokeConnection } from './oauth/tokens.ts';
@@ -745,6 +745,12 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     const jobId = path.split('/').pop()!;
     await env.DB.prepare('DELETE FROM cron_jobs WHERE id = ?').bind(jobId).run();
     return json({ ok: true });
+  }
+
+  // Telegram webhook info — check if webhook is registered
+  if (path === '/admin/telegram/webhook' && request.method === 'GET') {
+    const info = await getTelegramWebhookInfo(env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_API_BASE);
+    return json(info);
   }
 
   // Telegram setup — register webhook + bot commands in one call

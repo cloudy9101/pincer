@@ -65,6 +65,26 @@ export async function ensureCommandsRegistered(
   }
 }
 
+export interface WebhookInfo {
+  url: string;
+  has_custom_certificate: boolean;
+  pending_update_count: number;
+  last_error_date?: number;
+  last_error_message?: string;
+}
+
+/**
+ * Fetch current webhook info from Telegram.
+ */
+export async function getTelegramWebhookInfo(
+  botToken: string,
+  apiBase?: string,
+): Promise<{ ok: boolean; result: WebhookInfo }> {
+  const base = (apiBase ?? DEFAULT_TELEGRAM_API) + '/bot';
+  const response = await fetch(`${base}${botToken}/getWebhookInfo`);
+  return (await response.json()) as { ok: boolean; result: WebhookInfo };
+}
+
 /**
  * Register the Telegram webhook so Telegram sends updates to this Worker.
  * The webhook URL is derived from the incoming request's origin.

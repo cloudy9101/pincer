@@ -91,6 +91,24 @@ export interface CatalogSecretField {
   placeholder: string;
 }
 
+export interface WebhookInfo {
+  url: string;
+  has_custom_certificate: boolean;
+  pending_update_count: number;
+  last_error_date?: number;
+  last_error_message?: string;
+}
+
+export interface WebhookInfoResponse {
+  ok: boolean;
+  result: WebhookInfo;
+}
+
+export interface TelegramSetupResponse {
+  webhook: { ok: boolean; description?: string };
+  commands: { ok: boolean; description?: string };
+}
+
 export interface CatalogSkill {
   name: string;
   displayName: string;
