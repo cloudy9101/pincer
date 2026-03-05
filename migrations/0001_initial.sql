@@ -2,7 +2,7 @@
 CREATE TABLE agents (
     id TEXT PRIMARY KEY,
     display_name TEXT,
-    model TEXT NOT NULL DEFAULT 'anthropic/claude-sonnet-4-20250514',
+    model TEXT NOT NULL DEFAULT 'workers-ai/auto',
     system_prompt TEXT,
     thinking_level TEXT DEFAULT 'medium',
     temperature REAL DEFAULT 0.7,
@@ -10,7 +10,7 @@ CREATE TABLE agents (
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
-INSERT INTO agents (id, display_name, model) VALUES ('main', 'Main', 'anthropic/claude-sonnet-4-20250514');
+INSERT INTO agents (id, display_name, model) VALUES ('main', 'Main', 'workers-ai/auto');
 
 -- config (key-value)
 CREATE TABLE config (
