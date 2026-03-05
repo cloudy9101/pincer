@@ -22,11 +22,10 @@ export interface Env {
   // Secrets - Telegram
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
-
-  // Secrets - Discord
-  DISCORD_PUBLIC_KEY: string;
-  DISCORD_BOT_TOKEN: string;
-  DISCORD_APP_ID: string;
+  // Telegram user ID of the bot owner. Set this when deploying so that user is
+  // automatically approved as owner on first contact. When unset, the first
+  // user to send a message is auto-approved (original behaviour).
+  TELEGRAM_OWNER_ID?: string;
 
   // Secrets - Security
   ENCRYPTION_KEY: string;
