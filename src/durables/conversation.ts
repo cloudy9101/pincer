@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { generateText, streamText, stepCountIs } from 'ai';
 import type { ModelMessage } from 'ai';
 import type { Env } from '../env.ts';
-import { getModel, parseModelString } from '../llm/gateway.ts';
+import { getModel, resolveModel, parseModelString } from '../llm/gateway.ts';
 import { buildToolSet, type ToolCallContext } from '../llm/tool-registry.ts';
 import { classifyLLMError, sleep, type LLMErrorInfo } from '../llm/errors.ts';
 import { DEFAULTS } from '../config/defaults.ts';
@@ -252,7 +252,11 @@ export class ConversationSqlDO extends DurableObject<Env> {
       userId: input.userId,
     };
     const tools = await buildToolSet(toolCtx);
-    const llmModel = getModel(model, this.env);
+    const llmModel = await resolveModel(
+      model,
+      { message: input.text, hasTools: Object.keys(tools).length > 0, historyLength: 0 },
+      this.env,
+    );
 
     // Build system prompt with profile, memories and skills
     let systemPrompt = systemPromptBase;
@@ -375,7 +379,11 @@ export class ConversationSqlDO extends DurableObject<Env> {
         replyTo: { channel: replyTo.channel, chatId: replyTo.chatId },
       };
       const tools = await buildToolSet(toolCtx);
-      const model = getModel(this.state_.model, this.env);
+      const model = await resolveModel(
+        this.state_.model,
+        { message: userText, hasTools: Object.keys(tools).length > 0, historyLength: this.history.length },
+        this.env,
+      );
 
       const memoryCtx: MemoryContext = {
         sessionKey,
@@ -563,7 +571,11 @@ export class ConversationSqlDO extends DurableObject<Env> {
       .map((m) => `[${m.role}]: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`)
       .join('\n\n');
 
-    const model = getModel(this.state_?.model ?? DEFAULTS.model, this.env);
+    const model = await resolveModel(
+      this.state_?.model ?? DEFAULTS.model,
+      { message: 'summarize conversation', hasTools: false, historyLength: 0 },
+      this.env,
+    );
 
     const summaryResult = await generateText({
       model,

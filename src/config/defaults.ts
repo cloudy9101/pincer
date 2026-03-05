@@ -1,5 +1,7 @@
 export const DEFAULTS = {
-  model: 'anthropic/claude-sonnet-4-20250514',
+  // Workers AI auto-routing: Granite 4.0 H Micro classifies each request and
+  // picks the best model (Qwen3-30B-A3B / GLM-4.7 Flash / Llama 3.3 70B).
+  model: 'workers-ai/auto',
   temperature: 0.7,
   maxTokens: 4096,
   thinkingLevel: 'medium',
