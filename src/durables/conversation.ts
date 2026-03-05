@@ -12,6 +12,7 @@ import type { MemoryContext } from '../memory/types.ts';
 import { loadActiveSkills } from '../skills/loader.ts';
 import { formatSkillsPrompt } from '../skills/prompt.ts';
 import { sendTelegramMessage, sendTelegramMessageAndGetId, sendTelegramChatAction, editTelegramMessage } from '../channels/telegram/send.ts';
+import { BOT_COMMANDS } from '../channels/telegram/commands.ts';
 import { getAgent } from '../config/loader.ts';
 import { getCanonicalId } from '../routing/identity-links.ts';
 import { isAllowed } from '../security/allowlist.ts';
@@ -652,15 +653,7 @@ export class ConversationSqlDO extends DurableObject<Env> {
       case '/help':
         return (
           'Available commands:\n' +
-          '/help — Show this message\n' +
-          '/reset — Clear conversation history\n' +
-          '/compact — Summarize old messages to save context\n' +
-          '/model — Show current model\n' +
-          '/model <name> — Switch model (e.g. anthropic/claude-sonnet-4-20250514)\n' +
-          '/agent — Show current agent\n' +
-          '/agent <id> — Switch agent\n' +
-          '/whoami — Show your identity info\n' +
-          '/status — Show bot status'
+          BOT_COMMANDS.map(c => `/${c.command} — ${c.description}`).join('\n')
         );
 
       case '/reset': {

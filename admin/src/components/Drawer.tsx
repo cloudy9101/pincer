@@ -7,6 +7,7 @@ const links = [
   { to: '/sessions', label: 'Sessions' },
   { to: '/allowlist', label: 'Allowlist' },
   { to: '/settings', label: 'Settings' },
+  { to: '/setup', label: 'Setup' },
 ];
 
 interface DrawerProps {

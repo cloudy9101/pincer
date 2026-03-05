@@ -3,6 +3,7 @@ import type {
   Agent, Skill, SkillSecretKey, Session, SessionMessage,
   AllowlistEntry, ConfigEntry, StatusResponse, UsageResponse,
   MCPServer, OAuthConnection, CatalogSkill,
+  WebhookInfoResponse, TelegramSetupResponse,
 } from './types';
 
 function authHeaders(): Record<string, string> {
@@ -74,6 +75,13 @@ export const listMCP = () => request<MCPServer[]>('GET', '/admin/mcp');
 // OAuth
 export const listOAuth = () => request<OAuthConnection[]>('GET', '/admin/oauth');
 export const revokeOAuth = (id: string) => request<void>('DELETE', `/admin/oauth/${id}`);
+
+// Setup
+export const completeSetup = () => request<{ ok: boolean }>('POST', '/admin/setup/complete');
+
+// Telegram setup
+export const getTelegramWebhook = () => request<WebhookInfoResponse>('GET', '/admin/telegram/webhook');
+export const setupTelegramChannel = () => request<TelegramSetupResponse>('POST', '/admin/telegram/setup');
 
 // Skill catalog
 export const listCatalog = () => request<CatalogSkill[]>('GET', '/admin/skills/catalog');

@@ -8,6 +8,7 @@ const links = [
   { to: '/sessions', label: 'Sessions' },
   { to: '/allowlist', label: 'Allowlist' },
   { to: '/settings', label: 'Settings' },
+  { to: '/setup', label: 'Setup' },
 ];
 
 export default function Sidebar() {
