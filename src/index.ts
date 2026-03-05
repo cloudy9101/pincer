@@ -67,8 +67,13 @@ export default {
       }
 
       // Admin SPA (static assets)
+      // Try the exact asset first; fall back to the SPA shell for client-side routes.
       if (path.startsWith('/dashboard/') || path === '/dashboard') {
-        return env.ASSETS.fetch(request);
+        const res = await env.ASSETS.fetch(request);
+        if (res.status === 404) {
+          return env.ASSETS.fetch(new Request(new URL('/dashboard/index.html', request.url).href));
+        }
+        return res;
       }
 
       // Health check
