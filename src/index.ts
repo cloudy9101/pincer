@@ -18,6 +18,7 @@ import { deleteMemory } from './memory/store.ts';
 import { DEFAULTS } from './config/defaults.ts';
 import { log } from './utils/logger.ts';
 import { installSkill, removeSkill, updateSkillSecrets, listSkillSecretKeys } from './skills/installer.ts';
+import { CATALOG, getCatalogEntry } from './skills/catalog.ts';
 import { registerMCPServer, removeMCPServer, updateMCPServer, updateMCPServerHeaders, listMCPServerHeaderKeys } from './mcp/installer.ts';
 import { getMCPServer } from './mcp/loader.ts';
 import { discoverMCPTools } from './mcp/client.ts';
@@ -606,6 +607,38 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
       return json(result);
     } catch (e) {
       return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  }
+
+  // Skill catalog — must be before /admin/skills/:name catch-all
+  if (path === '/admin/skills/catalog' && request.method === 'GET') {
+    const { results } = await env.DB.prepare('SELECT name FROM skills').all();
+    const installedNames = new Set(results.map(r => r.name as string));
+    return json(CATALOG.map(e => ({
+      name: e.name,
+      displayName: e.displayName,
+      description: e.description,
+      authType: e.authType,
+      secretFields: e.secretFields,
+      oauthProvider: e.oauthProvider ?? null,
+      setupUrl: e.setupUrl ?? null,
+      installed: installedNames.has(e.name),
+    })));
+  }
+
+  if (path.match(/^\/admin\/skills\/catalog\/[^/]+\/install$/) && request.method === 'POST') {
+    const skillName = path.split('/')[4]!;
+    const entry = getCatalogEntry(skillName);
+    if (!entry) return json({ error: 'Catalog skill not found' }, 404);
+    const body = await request.json() as { secrets?: Record<string, string> };
+    try {
+      const skill = await installSkill(env, { content: entry.content });
+      if (body.secrets && Object.keys(body.secrets).length > 0) {
+        await updateSkillSecrets(env, skill.name, body.secrets);
+      }
+      return json({ ok: true, name: skill.name });
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }
   }
 

@@ -84,3 +84,20 @@ export interface OAuthConnection {
   expires_at?: string;
   created_at: string;
 }
+
+export interface CatalogSecretField {
+  key: string;
+  label: string;
+  placeholder: string;
+}
+
+export interface CatalogSkill {
+  name: string;
+  displayName: string;
+  description: string;
+  authType: string;
+  secretFields: CatalogSecretField[];
+  oauthProvider: string | null;
+  setupUrl: string | null;
+  installed: boolean;
+}
