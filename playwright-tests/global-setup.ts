@@ -1,6 +1,9 @@
 import { spawn } from 'child_process';
-import { writeFileSync, existsSync, readFileSync, copyFileSync } from 'fs';
-import { resolve } from 'path';
+import { writeFileSync, existsSync, copyFileSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const MOCK_PORT = 9999;
 const ROOT = resolve(__dirname, '..');

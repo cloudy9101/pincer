@@ -1,5 +1,8 @@
 import { existsSync, copyFileSync, unlinkSync } from 'fs';
-import { resolve } from 'path';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const ROOT = resolve(__dirname, '..');
 const DEV_VARS = resolve(ROOT, '.dev.vars');
