@@ -19,10 +19,6 @@ export interface Env {
   // Vectorize
   MEMORY: VectorizeIndex;
 
-  // Secrets - AI Gateway (BYOK — provider keys stored in AI Gateway dashboard)
-  CF_AIG_TOKEN: string;
-  CF_AIG_GATEWAY: string;
-
   // Secrets - Telegram
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
@@ -48,7 +44,6 @@ export interface Env {
   ASSETS: Fetcher;
 
   // Secrets - Cloudflare
-  CF_ACCOUNT_ID: string;
   CF_API_TOKEN?: string;
   CF_ACCESS_CLIENT_ID?: string;
   CF_ACCESS_CLIENT_SECRET?: string;

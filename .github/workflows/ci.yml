@@ -20,5 +20,9 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Build admin
+        working-directory: admin
+        run: bun install --frozen-lockfile && bun run build
+
       - name: Build
         run: bunx wrangler build

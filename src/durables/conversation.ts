@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { generateText, streamText, stepCountIs } from 'ai';
 import type { ModelMessage } from 'ai';
 import type { Env } from '../env.ts';
-import { getModel, parseModelString } from '../llm/gateway.ts';
+import { getModel, resolveModel, parseModelString } from '../llm/gateway.ts';
 import { buildToolSet, type ToolCallContext } from '../llm/tool-registry.ts';
 import { classifyLLMError, sleep, type LLMErrorInfo } from '../llm/errors.ts';
 import { DEFAULTS } from '../config/defaults.ts';
@@ -252,7 +252,11 @@ export class ConversationSqlDO extends DurableObject<Env> {
       userId: input.userId,
     };
     const tools = await buildToolSet(toolCtx);
-    const llmModel = getModel(model, this.env);
+    const llmModel = await resolveModel(
+      model,
+      { message: input.text, hasTools: Object.keys(tools).length > 0, historyLength: 0 },
+      this.env,
+    );
 
     // Build system prompt with profile, memories and skills
     let systemPrompt = systemPromptBase;
@@ -289,8 +293,6 @@ export class ConversationSqlDO extends DurableObject<Env> {
       maxTokens,
       messageCount: 0,
     };
-    const providerOptions = buildProviderOptions(sessionState);
-
     // Retry loop for transient provider errors (rate-limit / overloaded)
     let attempt = 0;
     while (true) {
@@ -303,7 +305,6 @@ export class ConversationSqlDO extends DurableObject<Env> {
           stopWhen: stepCountIs(MAX_TOOL_STEPS),
           maxOutputTokens: maxTokens,
           temperature: thinkingLevel !== 'none' ? undefined : temperature,
-          providerOptions,
           maxRetries: 0,
         });
 
@@ -375,7 +376,11 @@ export class ConversationSqlDO extends DurableObject<Env> {
         replyTo: { channel: replyTo.channel, chatId: replyTo.chatId },
       };
       const tools = await buildToolSet(toolCtx);
-      const model = getModel(this.state_.model, this.env);
+      const model = await resolveModel(
+        this.state_.model,
+        { message: userText, hasTools: Object.keys(tools).length > 0, historyLength: this.history.length },
+        this.env,
+      );
 
       const memoryCtx: MemoryContext = {
         sessionKey,
@@ -408,8 +413,6 @@ export class ConversationSqlDO extends DurableObject<Env> {
         systemPrompt = systemPrompt + skillsSection;
       }
 
-      const providerOptions = buildProviderOptions(this.state_);
-
       // ── LLM call with retry / auto-compact loop ──
       let didCompactForContext = false;
       let attempt = 0;
@@ -424,7 +427,6 @@ export class ConversationSqlDO extends DurableObject<Env> {
             stopWhen: stepCountIs(MAX_TOOL_STEPS),
             maxOutputTokens: this.state_.maxTokens,
             temperature: this.state_.thinkingLevel !== 'none' ? undefined : this.state_.temperature,
-            providerOptions,
             maxRetries: 0,
           });
 
@@ -563,7 +565,11 @@ export class ConversationSqlDO extends DurableObject<Env> {
       .map((m) => `[${m.role}]: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`)
       .join('\n\n');
 
-    const model = getModel(this.state_?.model ?? DEFAULTS.model, this.env);
+    const model = await resolveModel(
+      this.state_?.model ?? DEFAULTS.model,
+      { message: 'summarize conversation', hasTools: false, historyLength: 0 },
+      this.env,
+    );
 
     const summaryResult = await generateText({
       model,
@@ -832,20 +838,3 @@ function buildUserErrorMessage(info: LLMErrorInfo): string {
   }
 }
 
-function buildProviderOptions(state: SessionState) {
-  const { provider } = parseModelString(state.model);
-
-  if (provider === 'anthropic' && state.thinkingLevel && state.thinkingLevel !== 'none') {
-    const budgets: Record<string, number> = { low: 2048, medium: 8192, high: 32768 };
-    return {
-      anthropic: {
-        thinking: {
-          type: 'enabled' as const,
-          budgetTokens: budgets[state.thinkingLevel] ?? budgets.medium!,
-        },
-      },
-    };
-  }
-
-  return undefined;
-}

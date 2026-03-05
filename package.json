@@ -12,12 +12,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.43",
     "@ai-sdk/mcp": "^1.0.21",
-    "@anthropic-ai/sdk": "^0.74.0",
     "ai": "^6.0.85",
-    "ai-gateway-provider": "^3.1.1",
-    "croner": "^10.0.1"
+    "croner": "^10.0.1",
+    "workers-ai-provider": "^3.1.2"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260213.0",
