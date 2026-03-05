@@ -12,7 +12,6 @@ import type { MemoryContext } from '../memory/types.ts';
 import { loadActiveSkills } from '../skills/loader.ts';
 import { formatSkillsPrompt } from '../skills/prompt.ts';
 import { sendTelegramMessage, sendTelegramMessageAndGetId, sendTelegramChatAction, editTelegramMessage } from '../channels/telegram/send.ts';
-import { editDiscordInteractionResponse, editDiscordOriginal } from '../channels/discord/send.ts';
 import { getAgent } from '../config/loader.ts';
 import { getCanonicalId } from '../routing/identity-links.ts';
 import { isAllowed } from '../security/allowlist.ts';
@@ -25,7 +24,6 @@ export interface ReplyDestination {
   chatId: string;
   chatType: string;
   channelMessageId?: string;
-  interactionToken?: string;
 }
 
 export interface MessageInput {
@@ -757,16 +755,6 @@ export class ConversationSqlDO extends DurableObject<Env> {
           this.env.TELEGRAM_BOT_TOKEN,
         );
         break;
-      case 'discord':
-        if (dest.interactionToken) {
-          await editDiscordInteractionResponse(
-            this.env.DISCORD_APP_ID,
-            dest.interactionToken,
-            text,
-            this.env.DISCORD_BOT_TOKEN,
-          );
-        }
-        break;
       default:
         console.error(`Unknown reply channel: ${dest.channel}`);
     }
@@ -785,12 +773,6 @@ export class ConversationSqlDO extends DurableObject<Env> {
           },
           this.env.TELEGRAM_BOT_TOKEN,
         );
-      case 'discord':
-        if (dest.interactionToken) {
-          await editDiscordOriginal(this.env.DISCORD_APP_ID, dest.interactionToken, text);
-          return 'discord'; // sentinel — Discord edits use interactionToken, not a message ID
-        }
-        return undefined;
       default:
         return undefined;
     }
@@ -801,11 +783,6 @@ export class ConversationSqlDO extends DurableObject<Env> {
     switch (dest.channel) {
       case 'telegram':
         await editTelegramMessage(dest.chatId, messageId, text, this.env.TELEGRAM_BOT_TOKEN);
-        break;
-      case 'discord':
-        if (dest.interactionToken) {
-          await editDiscordOriginal(this.env.DISCORD_APP_ID, dest.interactionToken, text);
-        }
         break;
     }
   }

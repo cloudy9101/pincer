@@ -1,7 +1,6 @@
 import { Cron } from 'croner';
 import type { Env } from '../env.ts';
 import { sendTelegramMessage } from '../channels/telegram/send.ts';
-import { sendDiscordChannelMessage } from '../channels/discord/send.ts';
 import { getAgent } from '../config/loader.ts';
 import { DEFAULTS } from '../config/defaults.ts';
 import { log } from '../utils/logger.ts';
@@ -76,8 +75,6 @@ async function runJob(env: Env, job: CronJobRow, scheduledTime: number): Promise
         { channel: 'telegram', chatId: job.reply_chat_id, text: result.text },
         env.TELEGRAM_BOT_TOKEN,
       );
-    } else if (job.reply_channel === 'discord') {
-      await sendDiscordChannelMessage(job.reply_chat_id, result.text, env.DISCORD_BOT_TOKEN);
     }
   } catch (e) {
     log('error', 'Cron job failed', { jobId: job.id, name: job.name, error: String(e) });

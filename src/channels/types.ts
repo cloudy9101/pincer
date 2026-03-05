@@ -1,4 +1,4 @@
-export type Channel = 'telegram' | 'discord' | 'webchat';
+export type Channel = 'telegram' | 'webchat';
 
 export interface IncomingMessage {
   channel: Channel;
@@ -8,7 +8,6 @@ export interface IncomingMessage {
   chatId: string;
   chatType: 'direct' | 'group';
   threadId?: string;
-  guildId?: string;
   text: string;
   mediaUrls?: string[];
   replyToMessageId?: string;

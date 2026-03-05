@@ -16,8 +16,6 @@ export async function resolveRoute(db: D1Database, msg: IncomingMessage): Promis
   const bindings = results as unknown as BindingRule[];
 
   for (const binding of bindings) {
-    // Check guild match (Discord)
-    if (binding.guildId && binding.guildId !== msg.guildId) continue;
 
     // Check peer_kind + peer_id match
     if (binding.peerKind && binding.peerId) {
