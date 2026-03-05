@@ -53,6 +53,7 @@ export interface StatusResponse {
   agents: number;
   sessions: number;
   allowlistEntries: number;
+  setupCompleted: boolean;
 }
 
 export interface UsageRow {

@@ -7,7 +7,7 @@ import { buildSessionKeyFromMessage } from './routing/session-key.ts';
 import { isAllowed, checkAllowlistEmpty, addToAllowlist, createPairingCode, approvePairingCode, getAllowlist, removeFromAllowlist } from './security/allowlist.ts';
 import { checkRateLimit } from './security/rate-limit.ts';
 import { verifyAdminAuth } from './security/admin-auth.ts';
-import { getAgent, setConfigValue } from './config/loader.ts';
+import { getAgent, getConfigValue, setConfigValue } from './config/loader.ts';
 import { getMedia } from './media/store.ts';
 import { getCanonicalId } from './routing/identity-links.ts';
 import { deleteMemory } from './memory/store.ts';
@@ -286,14 +286,18 @@ async function handleMediaServe(path: string, env: Env): Promise<Response> {
 async function handleAdminRoute(request: Request, path: string, env: Env): Promise<Response> {
   // Status
   if (path === '/admin/status' && request.method === 'GET') {
-    const agentCount = await env.DB.prepare('SELECT COUNT(*) as cnt FROM agents').first();
-    const sessionCount = await env.DB.prepare('SELECT COUNT(*) as cnt FROM session_metadata').first();
-    const allowlistCount = await env.DB.prepare('SELECT COUNT(*) as cnt FROM allowlist').first();
+    const [agentCount, sessionCount, allowlistCount, setupCompleted] = await Promise.all([
+      env.DB.prepare('SELECT COUNT(*) as cnt FROM agents').first(),
+      env.DB.prepare('SELECT COUNT(*) as cnt FROM session_metadata').first(),
+      env.DB.prepare('SELECT COUNT(*) as cnt FROM allowlist').first(),
+      getConfigValue(env.DB, env.CACHE, 'setup_completed'),
+    ]);
     return json({
       status: 'ok',
       agents: agentCount?.cnt,
       sessions: sessionCount?.cnt,
       allowlistEntries: allowlistCount?.cnt,
+      setupCompleted: setupCompleted === 'true',
     });
   }
 
@@ -744,6 +748,12 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
   if (path.match(/^\/admin\/crons\/[^/]+$/) && request.method === 'DELETE') {
     const jobId = path.split('/').pop()!;
     await env.DB.prepare('DELETE FROM cron_jobs WHERE id = ?').bind(jobId).run();
+    return json({ ok: true });
+  }
+
+  // Mark setup as completed
+  if (path === '/admin/setup/complete' && request.method === 'POST') {
+    await setConfigValue(env.DB, env.CACHE, 'setup_completed', 'true');
     return json({ ok: true });
   }
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { getStatus, getTelegramWebhook, setupTelegramChannel, listAgents, listAllowlist } from '../api';
+import { Link, useNavigate } from 'react-router';
+import { getTelegramWebhook, setupTelegramChannel, listAgents, listAllowlist, completeSetup } from '../api';
 import Card from '../components/Card';
 import ErrorBanner from '../components/ErrorBanner';
 
@@ -10,10 +11,12 @@ interface StepState {
 }
 
 export default function Setup() {
+  const navigate = useNavigate();
   const [steps, setSteps] = useState<StepState>({ webhook: 'loading', agent: 'loading', allowlist: 'loading' });
   const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookError, setWebhookError] = useState('');
   const [setupLoading, setSetupLoading] = useState(false);
+  const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState('');
 
   async function load() {
@@ -76,8 +79,24 @@ export default function Setup() {
       {error && <ErrorBanner message={error} onRetry={load} />}
 
       {allDone && (
-        <div className="rounded-md bg-green-50 border border-green-200 px-4 py-3">
+        <div className="rounded-md bg-green-50 border border-green-200 px-4 py-3 flex items-center justify-between">
           <p className="text-sm font-medium text-green-800">All set! Your bot is ready to use.</p>
+          <button
+            onClick={async () => {
+              setFinishing(true);
+              try {
+                await completeSetup();
+                navigate('/', { replace: true });
+              } catch (e) {
+                setError(String(e));
+                setFinishing(false);
+              }
+            }}
+            disabled={finishing}
+            className="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {finishing ? 'Finishing...' : 'Go to Dashboard'}
+          </button>
         </div>
       )}
 
@@ -125,12 +144,12 @@ export default function Setup() {
                 Configure at least one agent with a model and system prompt.
               </p>
               {steps.agent === 'pending' && (
-                <a
-                  href="/dashboard/agents"
+                <Link
+                  to="/agents"
                   className="mt-3 inline-block px-4 py-2 text-sm font-medium text-indigo-600 border border-indigo-300 rounded-md hover:bg-indigo-50"
                 >
                   Go to Agents
-                </a>
+                </Link>
               )}
               {steps.agent === 'done' && (
                 <p className="mt-1 text-xs text-green-600">Agent configured</p>
@@ -149,12 +168,12 @@ export default function Setup() {
                 Add at least one user to the allowlist, or set TELEGRAM_OWNER_ID to auto-approve on first message.
               </p>
               {steps.allowlist === 'pending' && (
-                <a
-                  href="/dashboard/allowlist"
+                <Link
+                  to="/allowlist"
                   className="mt-3 inline-block px-4 py-2 text-sm font-medium text-indigo-600 border border-indigo-300 rounded-md hover:bg-indigo-50"
                 >
                   Go to Allowlist
-                </a>
+                </Link>
               )}
               {steps.allowlist === 'done' && (
                 <p className="mt-1 text-xs text-green-600">Users configured</p>
