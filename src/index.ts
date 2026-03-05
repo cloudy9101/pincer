@@ -1,11 +1,7 @@
 import type { Env } from './env.ts';
-import { verifyTelegramWebhook, verifyDiscordWebhook } from './security/webhook-verify.ts';
+import { verifyTelegramWebhook } from './security/webhook-verify.ts';
 import { parseTelegramWebhook } from './channels/telegram/webhook.ts';
 import { sendTelegramMessage, sendTelegramChatAction } from './channels/telegram/send.ts';
-import { parseDiscordInteraction } from './channels/discord/webhook.ts';
-import { editDiscordInteractionResponse } from './channels/discord/send.ts';
-import { registerDiscordCommands } from './channels/discord/commands.ts';
-import { InteractionType, InteractionCallbackType, type DiscordInteraction } from './channels/discord/types.ts';
 import { resolveRoute } from './routing/resolve-route.ts';
 import { buildSessionKeyFromMessage } from './routing/session-key.ts';
 import { isAllowed, checkAllowlistEmpty, addToAllowlist, createPairingCode, approvePairingCode, getAllowlist, removeFromAllowlist } from './security/allowlist.ts';
@@ -44,11 +40,6 @@ export default {
         log('info', 'Webhook received', { method: request.method, path }, { traceId, handler: 'telegram' });
         return handleTelegramWebhook(request, env, ctx, traceId);
       }
-      if (path === '/webhook/discord' && request.method === 'POST') {
-        log('info', 'Webhook received', { method: request.method, path }, { traceId, handler: 'discord' });
-        return handleDiscordWebhook(request, env, ctx, traceId);
-      }
-
       // Media serving
       if (path.startsWith('/media/') && request.method === 'GET') {
         return handleMediaServe(path, env);
@@ -125,9 +116,16 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
     if (!isCommand) {
       // Check allowlist
       const allowlistEmpty = await checkAllowlistEmpty(env.DB);
-      const allowed = allowlistEmpty || await isAllowed(env.DB, msg.channel, msg.senderId);
+      const senderAllowed = !allowlistEmpty && await isAllowed(env.DB, msg.channel, msg.senderId);
 
-      if (!allowed) {
+      // Determine if sender is the owner:
+      // - If TELEGRAM_OWNER_ID is configured, only that user ID is the owner.
+      // - Otherwise, fall back to auto-approving the very first user (empty allowlist).
+      const isOwner = env.TELEGRAM_OWNER_ID
+        ? msg.senderId === env.TELEGRAM_OWNER_ID
+        : allowlistEmpty;
+
+      if (!senderAllowed && !isOwner) {
         const code = await createPairingCode(env.DB, msg.channel, msg.senderId, msg.senderName);
         await sendTelegramMessage(
           {
@@ -141,8 +139,8 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
         return;
       }
 
-      // Auto-add first user if allowlist is empty
-      if (allowlistEmpty) {
+      // Auto-add owner to allowlist if not already there
+      if (!senderAllowed && isOwner) {
         await addToAllowlist(env.DB, msg.channel, msg.senderId, msg.senderName);
       }
 
@@ -213,137 +211,6 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
           text: 'An error occurred. Please try again.',
         },
         env.TELEGRAM_BOT_TOKEN
-      );
-    } catch {
-      // Best effort
-    }
-  }
-}
-
-// ─── Discord Webhook ─────────────────────────────────────────
-
-async function handleDiscordWebhook(request: Request, env: Env, ctx: ExecutionContext, traceId: string): Promise<Response> {
-  try {
-    // Verify Ed25519 signature
-    if (!await verifyDiscordWebhook(request, env.DISCORD_PUBLIC_KEY)) {
-      return new Response('Invalid signature', { status: 401 });
-    }
-
-    const body = (await request.json()) as DiscordInteraction;
-
-    // Handle PING (used by Discord to verify the endpoint)
-    if (body.type === InteractionType.PING) {
-      return json({ type: InteractionCallbackType.PONG });
-    }
-
-    // Only handle APPLICATION_COMMAND
-    if (body.type !== InteractionType.APPLICATION_COMMAND) {
-      return new Response('Unhandled interaction type', { status: 400 });
-    }
-
-    // Defer the response immediately (shows "thinking...")
-    // Then process in the background
-    ctx.waitUntil(processDiscordInteraction(body, env, traceId));
-
-    return json({ type: InteractionCallbackType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
-  } catch (error) {
-    log('error', 'Discord webhook error', { error: String(error) }, { traceId, handler: 'discord' });
-    return new Response('', { status: 200 });
-  }
-}
-
-async function processDiscordInteraction(interaction: DiscordInteraction, env: Env, traceId: string): Promise<void> {
-  const msg = parseDiscordInteraction(interaction);
-  if (!msg) {
-    await editDiscordInteractionResponse(
-      env.DISCORD_APP_ID, interaction.token, 'Could not parse that interaction.', env.DISCORD_BOT_TOKEN,
-    );
-    return;
-  }
-
-  try {
-    // Commands skip allowlist/rate-limit checks
-    const isCommand = msg.text.startsWith('/');
-
-    if (!isCommand) {
-      // Check allowlist
-      const allowlistEmpty = await checkAllowlistEmpty(env.DB);
-      const allowed = allowlistEmpty || await isAllowed(env.DB, msg.channel, msg.senderId);
-
-      if (!allowed) {
-        const code = await createPairingCode(env.DB, msg.channel, msg.senderId, msg.senderName);
-        await editDiscordInteractionResponse(
-          env.DISCORD_APP_ID, interaction.token,
-          `You're not on the allowlist. Your pairing code is: ${code}\nAsk the owner to approve it.`,
-          env.DISCORD_BOT_TOKEN,
-        );
-        return;
-      }
-
-      // Auto-add first user if allowlist is empty
-      if (allowlistEmpty) {
-        await addToAllowlist(env.DB, msg.channel, msg.senderId, msg.senderName);
-      }
-
-      // Rate limit
-      const rateCheck = await checkRateLimit(env.CACHE, msg.channel, msg.senderId);
-      if (!rateCheck.allowed) {
-        await editDiscordInteractionResponse(
-          env.DISCORD_APP_ID, interaction.token,
-          'You are being rate limited. Please wait a moment.',
-          env.DISCORD_BOT_TOKEN,
-        );
-        return;
-      }
-    }
-
-    // Resolve route
-    const route = await resolveRoute(env.DB, msg);
-    const agent = await getAgent(env.DB, env.CACHE, route.agentId);
-    if (!agent) {
-      log('error', 'Agent not found', { agentId: route.agentId });
-      await editDiscordInteractionResponse(
-        env.DISCORD_APP_ID, interaction.token, 'Agent not found.', env.DISCORD_BOT_TOKEN,
-      );
-      return;
-    }
-
-    // Build session key
-    const sessionKey = buildSessionKeyFromMessage(msg, route.agentId, route.accountId);
-    const userId = await getCanonicalId(env.DB, msg.channel, msg.senderId);
-
-    // Route to ConversationDO
-    const doId = env.CONVERSATION_DO.idFromName(sessionKey);
-    const stub = env.CONVERSATION_DO.get(doId);
-
-    log('info', 'DO dispatch', { sessionKey }, { traceId, handler: 'do-dispatch' });
-
-    // DO sends the Discord reply directly — await ensures RPC is dispatched
-    await stub.message({
-      text: msg.text,
-      sessionKey,
-      agentId: route.agentId,
-      userId,
-      senderId: msg.senderId,
-      senderName: msg.senderName,
-      model: agent.model,
-      systemPrompt: agent.systemPrompt ?? DEFAULTS.systemPrompt,
-      thinkingLevel: agent.thinkingLevel ?? DEFAULTS.thinkingLevel,
-      temperature: agent.temperature,
-      maxTokens: agent.maxTokens,
-      replyTo: {
-        channel: msg.channel,
-        chatId: msg.chatId,
-        chatType: msg.chatType,
-        channelMessageId: msg.channelMessageId,
-        interactionToken: interaction.token,
-      },
-    });
-  } catch (error) {
-    log('error', 'Error processing Discord interaction', { error: String(error), senderId: msg.senderId }, { traceId, handler: 'discord' });
-    try {
-      await editDiscordInteractionResponse(
-        env.DISCORD_APP_ID, interaction.token, 'An error occurred. Please try again.', env.DISCORD_BOT_TOKEN,
       );
     } catch {
       // Best effort
@@ -598,16 +465,6 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     const id = path.split('/').pop()!;
     const deleted = await deleteMemory(env, id);
     return json({ ok: deleted });
-  }
-
-  // Discord commands
-  if (path === '/admin/discord/commands' && request.method === 'POST') {
-    try {
-      const result = await registerDiscordCommands(env.DISCORD_APP_ID, env.DISCORD_BOT_TOKEN);
-      return json(result);
-    } catch (e) {
-      return json({ error: e instanceof Error ? e.message : String(e) }, 500);
-    }
   }
 
   // Skill catalog — must be before /admin/skills/:name catch-all

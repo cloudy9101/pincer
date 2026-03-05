@@ -30,18 +30,10 @@ TELEGRAM_BOT_TOKEN=
 # Generate:  openssl rand -hex 32
 TELEGRAM_WEBHOOK_SECRET=
 
-# ── Discord ───────────────────────────────────────────────────────────────────
-# Create an app at https://discord.com/developers/applications.
-# Leave blank if you are not using the Discord integration.
-
-# Ed25519 public key — found in General Information tab.
-DISCORD_PUBLIC_KEY=
-
-# Bot token — found in the Bot tab (Reset Token).
-DISCORD_BOT_TOKEN=
-
-# Application ID — found in General Information tab.
-DISCORD_APP_ID=
+# Your Telegram user ID — set this so you are recognised as the bot owner on
+# first contact instead of relying on "first user wins" auto-approval.
+# Find your ID by messaging @userinfobot on Telegram.
+TELEGRAM_OWNER_ID=
 
 # ── OAuth Providers (optional) ────────────────────────────────────────────────
 # Enable these to let users connect their external accounts to the bot.
