@@ -1,6 +1,8 @@
 # Pincer Gateway
 
-A serverless AI messaging gateway built on Cloudflare Workers. Connect Telegram and Discord to large language models — with conversation memory, installable skill plugins, MCP server support, OAuth connections, and a React admin dashboard — all running at the edge with zero cold-start latency.
+A serverless AI messaging gateway built on Cloudflare Workers. Connect Telegram to large language models — with conversation memory, installable skill plugins, MCP server support, OAuth connections, and a React admin dashboard — all running at the edge with zero cold-start latency.
+
+> **Work in progress** — active development, not yet stable. Expect breaking changes.
 
 **No external LLM API key required.** Inference runs through the [Workers AI](https://developers.cloudflare.com/workers-ai/) binding.
 
@@ -10,7 +12,7 @@ A serverless AI messaging gateway built on Cloudflare Workers. Connect Telegram 
 
 ## Features
 
-- **Telegram & Discord** — webhook-driven; responds to messages, slash commands, images, and voice notes
+- **Telegram** — webhook-driven; responds to messages, images, and voice notes
 - **Voice transcription** — audio messages automatically transcribed via Workers AI Whisper before being sent to the LLM
 - **Vision** — inline images passed directly to vision-capable models
 - **Workers AI** — all LLM inference through the Workers AI binding; no external API key needed
@@ -42,7 +44,7 @@ A serverless AI messaging gateway built on Cloudflare Workers. Connect Telegram 
 │                    streamText (Workers AI)                     │
 │                    + tools · skills · MCP                      │
 │                              │                                 │
-│                    Telegram / Discord reply                    │
+│                       Telegram reply                          │
 │                                                                │
 │  /admin/*  ─────▶ Admin REST API (bearer auth)                 │
 │  /dashboard/ ───▶ React SPA (static assets)                   │
@@ -62,7 +64,7 @@ A serverless AI messaging gateway built on Cloudflare Workers. Connect Telegram 
 | `src/index.ts` | Worker entry point — routing, webhook handling, admin API |
 | `src/durables/conversation.ts` | `ConversationSqlDO` — SQLite-backed Durable Object, owns the LLM loop |
 | `src/llm/router.ts` | Granite-based complexity classifier for intelligent model routing |
-| `src/channels/` | Telegram and Discord adapters (parse, send, voice/image handling) |
+| `src/channels/` | Telegram adapter (parse, send, voice/image handling) |
 | `src/skills/` | SKILL.md plugin system — parser, auth injection, built-in catalog |
 | `src/mcp/` | MCP server client (SSE and Streamable HTTP), tool namespacing |
 | `src/oauth/` | OAuth 2.0 flows (Google, GitHub, Microsoft) with encrypted token storage |
@@ -96,19 +98,12 @@ wrangler secret put TELEGRAM_BOT_TOKEN
 wrangler secret put TELEGRAM_WEBHOOK_SECRET
 ```
 
-### Register webhooks
+### Register the Telegram webhook
 
-**Telegram:**
 ```bash
 curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
   -H "Content-Type: application/json" \
   -d '{"url":"https://pincer-gateway.<subdomain>.workers.dev/webhook/telegram","secret_token":"<WEBHOOK_SECRET>"}'
-```
-
-**Discord:** register slash commands, then set the Interactions Endpoint URL in the [Discord Developer Portal](https://discord.com/developers/applications):
-```bash
-curl -X POST "https://pincer-gateway.<subdomain>.workers.dev/admin/discord/commands" \
-  -H "Authorization: Bearer <ADMIN_AUTH_TOKEN>"
 ```
 
 Open `https://pincer-gateway.<subdomain>.workers.dev/dashboard/` and log in with your `ADMIN_AUTH_TOKEN`.
@@ -173,7 +168,7 @@ pincer/
 ├── src/                  # Worker source
 │   ├── index.ts          # Entry point, admin API & webhook routing
 │   ├── env.ts            # Cloudflare bindings & secrets interface
-│   ├── channels/         # Telegram + Discord adapters
+│   ├── channels/         # Telegram adapter
 │   ├── durables/         # ConversationSqlDO (LLM loop, streaming, compaction)
 │   ├── llm/              # Workers AI gateway, Granite router, tool registry
 │   ├── skills/           # Skill plugin system, auth injection, built-in catalog
