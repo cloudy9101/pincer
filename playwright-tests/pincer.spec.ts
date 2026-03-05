@@ -19,7 +19,8 @@ const WEBHOOK_SECRET = 'test-webhook-secret';
 /** Authenticate the admin SPA by injecting the token into localStorage. */
 async function loginSPA(page: Page): Promise<void> {
   await page.goto(`${BASE_URL}/dashboard/`);
-  await page.evaluate((token) => localStorage.setItem('adminToken', token), ADMIN_TOKEN);
+  // Key must match TOKEN_KEY in admin/src/auth.ts
+  await page.evaluate((token) => localStorage.setItem('pincer_admin_token', token), ADMIN_TOKEN);
   await page.reload();
 }
 
@@ -115,7 +116,7 @@ test.describe('Admin SPA — auth gate', () => {
   test('submitting invalid token shows error', async ({ page }) => {
     await page.goto(`${BASE_URL}/dashboard/`);
     await page.getByRole('textbox').fill('wrong-token');
-    await page.getByRole('button', { name: /save|connect|login|submit/i }).click();
+    await page.getByRole('button', { name: /save|connect|login|sign|submit/i }).click();
     await expect(page.getByText(/invalid|unauthori|error/i)).toBeVisible();
   });
 
