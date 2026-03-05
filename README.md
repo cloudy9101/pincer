@@ -2,7 +2,7 @@
 
 A serverless AI messaging gateway built on Cloudflare Workers. Connect Telegram and Discord to large language models — with conversation memory, installable skill plugins, MCP server support, OAuth connections, and a React admin dashboard — all running at the edge with zero cold-start latency.
 
-**No external LLM API key required.** Inference runs entirely through the [Workers AI](https://developers.cloudflare.com/workers-ai/) binding.
+**No external LLM API key required.** Inference runs through the [Workers AI](https://developers.cloudflare.com/workers-ai/) binding.
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudy9101/pincer)
 
@@ -56,66 +56,29 @@ A serverless AI messaging gateway built on Cloudflare Workers. Connect Telegram 
 
 ---
 
-## Quick Start
+## Deploy with one click
 
-### Prerequisites
+Click the button above. Cloudflare will:
 
-- [Cloudflare account](https://dash.cloudflare.com/sign-up) — free tier is sufficient
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) v3+ (`npm install -g wrangler`)
-- [Bun](https://bun.sh) v1.3+
-- Telegram bot token from [@BotFather](https://t.me/BotFather) *(optional — Discord also supported)*
+1. Fork this repo to your GitHub account
+2. Automatically provision the D1 database, KV namespace, R2 bucket, and Vectorize index
+3. Build and deploy the Worker with CI/CD set up on your fork
 
-### 1. Clone and install
+After deployment, two manual steps remain:
 
-```bash
-git clone https://github.com/cloudy9101/pincer.git
-cd pincer
-bun install
-cd admin && bun install && cd ..
-```
+### Set secrets
 
-### 2. Authenticate Wrangler
+In your Worker's Settings → Variables, add the secrets from `.dev.vars.example`.
+Or use Wrangler:
 
 ```bash
-wrangler login
-```
-
-### 3. Provision Cloudflare resources
-
-Run the setup script to create the D1 database, KV namespace, R2 bucket, and Vectorize index:
-
-```bash
-./scripts/setup.sh
-```
-
-The script prints the IDs it creates. **Copy them into `wrangler.toml`** where the `YOUR_*_ID` placeholders are.
-
-### 4. Apply database migrations
-
-```bash
-wrangler d1 migrations apply pincer-db --remote
-```
-
-### 5. Set secrets
-
-Copy `.dev.vars.example` to `.dev.vars` for local development, or set production secrets with Wrangler:
-
-```bash
-wrangler secret put ADMIN_AUTH_TOKEN      # openssl rand -hex 32
-wrangler secret put ENCRYPTION_KEY        # openssl rand -hex 32
+wrangler secret put ADMIN_AUTH_TOKEN       # openssl rand -hex 32
+wrangler secret put ENCRYPTION_KEY         # openssl rand -hex 32
 wrangler secret put TELEGRAM_BOT_TOKEN
 wrangler secret put TELEGRAM_WEBHOOK_SECRET
 ```
 
-See `.dev.vars.example` for the full list of secrets (Discord, OAuth providers, etc.).
-
-### 6. Deploy
-
-```bash
-bun run deploy
-```
-
-### 7. Register webhooks
+### Register webhooks
 
 **Telegram:**
 ```bash
@@ -130,29 +93,57 @@ curl -X POST "https://pincer-gateway.<subdomain>.workers.dev/admin/discord/comma
   -H "Authorization: Bearer <ADMIN_AUTH_TOKEN>"
 ```
 
-### 8. Open the dashboard
-
-`https://pincer-gateway.<subdomain>.workers.dev/dashboard/` — log in with your `ADMIN_AUTH_TOKEN`.
+Open `https://pincer-gateway.<subdomain>.workers.dev/dashboard/` and log in with your `ADMIN_AUTH_TOKEN`.
 
 ---
 
-## Local Development
+## Manual deployment (CLI)
+
+<details>
+<summary>Expand for CLI instructions</summary>
+
+### Prerequisites
+
+- [Cloudflare account](https://dash.cloudflare.com/sign-up)
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) v4.45+
+- [Bun](https://bun.sh) v1.3+
+
+### Steps
 
 ```bash
-# Copy example secrets
-cp .dev.vars.example .dev.vars
-# Edit .dev.vars with your values, then:
-wrangler dev
+# 1. Clone and install
+git clone https://github.com/cloudy9101/pincer.git
+cd pincer
+bun install && cd admin && bun install && cd ..
+
+# 2. Authenticate
+wrangler login
+
+# 3. Deploy — Wrangler auto-provisions D1, KV, R2, and Vectorize on first run
+bun run deploy
 ```
 
-The admin SPA proxies to `http://localhost:8787` in dev mode.
+`bun run deploy` builds the admin SPA, applies D1 migrations, and deploys the Worker. Wrangler automatically creates any missing resources and updates `wrangler.toml` with the generated IDs.
+
+Then set secrets and register webhooks as described above.
+
+</details>
+
+---
+
+## Local development
+
+```bash
+cp .dev.vars.example .dev.vars   # fill in your secrets
+wrangler dev
+```
 
 ---
 
 ## Documentation
 
-- **[Deployment Guide](docs/deployment.md)** — full step-by-step setup from a blank Cloudflare account
-- **[Skill Authoring Guide](docs/skill-authoring.md)** — how to write, install, and manage SKILL.md plugins
+- **[Deployment Guide](docs/deployment.md)** — detailed setup reference
+- **[Skill Authoring Guide](docs/skill-authoring.md)** — how to write and publish SKILL.md plugins
 
 ---
 
@@ -176,7 +167,6 @@ pincer/
 │   └── utils/            # Logger and helpers
 ├── admin/                # Admin SPA (React + Tailwind)
 ├── migrations/           # D1 SQL migrations
-├── scripts/              # setup.sh and helpers
 ├── wrangler.toml         # Cloudflare Workers config
 ├── .dev.vars.example     # Secret template for local dev
 └── docs/                 # Guides

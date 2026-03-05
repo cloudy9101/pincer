@@ -75,8 +75,10 @@ The index name is already configured in `wrangler.toml` as `pincer-memory`.
 ## Step 3: Apply Database Migrations
 
 ```bash
-wrangler d1 migrations apply pincer-db --remote
+wrangler d1 migrations apply DB --remote
 ```
+
+> Use the binding name `DB` (not the database name), so the command works regardless of what name was given to the database during creation.
 
 This runs all files in `migrations/` in order, creating all tables.
 
@@ -198,5 +200,5 @@ bun run deploy
 To apply new database migrations:
 
 ```bash
-wrangler d1 migrations apply pincer-db --remote
+wrangler d1 migrations apply DB --remote
 ```
