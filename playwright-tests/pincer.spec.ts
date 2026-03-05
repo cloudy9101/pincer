@@ -346,8 +346,8 @@ test.describe('Telegram webhook — AI response (mock)', () => {
     const sends = await waitForBotMessages(page, 1);
     const body = sends[0]!.body as { text: string };
 
-    // The mock AI always responds with this exact string (set in .dev.vars)
-    expect(body.text).toBe('Hello from mock AI!');
+    // The mock AI always responds with this exact string (set via --var in playwright.config.ts)
+    expect(body.text).toBe('mock-ai-response');
   });
 
   test('/help command returns help text without hitting AI', async ({ page }) => {
