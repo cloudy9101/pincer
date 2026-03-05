@@ -9,7 +9,7 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.SubmitEvent) {
     e.preventDefault();
     setError('');
     setLoading(true);
@@ -18,8 +18,8 @@ export default function Login() {
       await getStatus();
       navigate('/');
     } catch {
+      console.log("TEST")
       setError('Invalid token. Please check your admin token and try again.');
-      setToken('');
     } finally {
       setLoading(false);
     }

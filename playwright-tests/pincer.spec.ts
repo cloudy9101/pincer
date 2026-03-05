@@ -21,7 +21,7 @@ async function loginSPA(page: Page): Promise<void> {
   await page.goto(`${BASE_URL}/dashboard/`);
   // Key must match TOKEN_KEY in admin/src/auth.ts
   await page.evaluate((token) => localStorage.setItem('pincer_admin_token', token), ADMIN_TOKEN);
-  await page.reload();
+  await page.goto(`${BASE_URL}/dashboard/`);
 }
 
 /** Fetch captured calls from the Telegram mock server. */
@@ -118,7 +118,7 @@ test.describe('Admin SPA — auth gate', () => {
     await page.goto(`${BASE_URL}/dashboard/`);
     await page.getByLabel(/admin token|token/i).fill('wrong-token');
     await page.getByRole('button', { name: /save|connect|login|sign|submit/i }).click();
-    await expect(page.getByText(/invalid|unauthori|error/i)).toBeVisible();
+    await expect(page.getByText(/Invalid|error/i)).toBeVisible();
   });
 
   test('valid token persists and redirects to dashboard', async ({ page }) => {
@@ -199,17 +199,23 @@ test.describe('Admin SPA — agents CRUD', () => {
     const agentId = `test-agent-${Date.now()}`;
 
     // Open create form
-    await page.getByRole('button', { name: /new|create|add/i }).click();
+    await page.getByText('New Agent').click();
 
     // Fill in agent ID (required)
-    const idField = page.getByLabel(/agent id|id/i).first();
+    const idField = page.getByRole('textbox').first();
     await idField.fill(agentId);
+    const nameField = page.getByRole('textbox').nth(1);
+    await nameField.fill("test agent");
+    const modelField = page.getByRole('textbox').nth(2);
+    await modelField.fill("model");
+    const systemPrompt = page.locator('textarea');
+    await systemPrompt.fill("test prompt");
 
     // Save
-    await page.getByRole('button', { name: /save|create|submit/i }).click();
+    await page.getByText('Save').click();
 
     // New agent must appear in the list
-    await expect(page.getByText(agentId)).toBeVisible();
+    await expect(page.getByRole('cell', { name: agentId })).toBeVisible();
   });
 
   test('delete an agent removes it from the list', async ({ page }) => {
@@ -220,19 +226,20 @@ test.describe('Admin SPA — agents CRUD', () => {
       headers: { Authorization: `Bearer ${ADMIN_TOKEN}` },
     });
     await page.reload();
-    await expect(page.getByText(agentId)).toBeVisible();
+    await expect(page.getByRole('cell', { name: agentId })).toBeVisible();
 
     // Delete it
-    const row = page.locator(`text=${agentId}`).locator('..');
-    await row.getByRole('button', { name: /delete|remove/i }).click();
+    const row = page.getByRole('cell', { name: agentId }).locator('..');
+    await row.getByRole('button', { name: 'Delete' }).click();
 
     // Confirm deletion if a dialog appears
-    const confirmBtn = page.getByRole('button', { name: /confirm|yes|delete/i });
+    const dialog = page.getByRole('button', { name: 'Cancel' }).locator('..');
+    const confirmBtn = dialog.getByRole('button', { name: 'Delete' });
     if (await confirmBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
       await confirmBtn.click();
     }
 
-    await expect(page.getByText(agentId)).not.toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('cell', { name: agentId })).not.toBeVisible({ timeout: 5000 });
   });
 });
 

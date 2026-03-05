@@ -339,6 +339,14 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     return json({ ok: true });
   }
 
+  if (path.startsWith('/admin/agents/') && request.method === 'DELETE') {
+    const agentId = path.split('/').pop()!;
+
+    await env.DB.prepare(`DELETE FROM agents WHERE id = ?`).bind(agentId).run();
+    await env.CACHE.delete(`agent:${agentId}`);
+    return json({ ok: true });
+  }
+
   // Bindings
   if (path === '/admin/bindings') {
     if (request.method === 'GET') {
