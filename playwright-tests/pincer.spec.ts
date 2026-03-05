@@ -23,6 +23,14 @@ async function completeSetupViaAPI(page: Page): Promise<void> {
   await page.request.post(`${BASE_URL}/admin/setup/complete`, { headers: authHeaders });
 }
 
+/** Reset the setup_completed flag so the SPA redirects to /setup. */
+async function resetSetupViaAPI(page: Page): Promise<void> {
+  await page.request.patch(`${BASE_URL}/admin/config`, {
+    data: { setup_completed: 'false' },
+    headers: authHeaders,
+  });
+}
+
 /** Authenticate the admin SPA by injecting the token into localStorage. */
 async function loginSPA(page: Page): Promise<void> {
   // Ensure setup is marked complete so AuthGuard doesn't redirect to /setup
@@ -141,7 +149,10 @@ test.describe('Admin SPA — auth gate', () => {
 
 test.describe('Admin SPA — setup onboarding', () => {
   test('redirects to /setup when setup is not completed', async ({ page }) => {
-    // Login WITHOUT completing setup first
+    // Ensure setup_completed is reset (other tests may have set it)
+    await resetSetupViaAPI(page);
+
+    // Login WITHOUT completing setup
     await page.goto(`${BASE_URL}/dashboard/`);
     await page.evaluate((token) => localStorage.setItem('pincer_admin_token', token), ADMIN_TOKEN);
     await page.goto(`${BASE_URL}/dashboard/`);

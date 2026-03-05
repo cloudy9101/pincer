@@ -47,6 +47,18 @@ const server = Bun.serve({
       }
       messages.push({ method, body, timestamp: Date.now() });
 
+      // Return method-specific responses
+      if (method === 'getWebhookInfo') {
+        return Response.json({
+          ok: true,
+          result: {
+            url: '',
+            has_custom_certificate: false,
+            pending_update_count: 0,
+          },
+        });
+      }
+
       // Return a minimal Telegram-like success envelope
       return Response.json({
         ok: true,
