@@ -1,4 +1,4 @@
-export type Channel = 'telegram' | 'discord' | 'webchat';
+export type Channel = 'telegram' | 'webchat';
 
 export interface MediaAttachment {
   fileId: string;
@@ -14,7 +14,6 @@ export interface IncomingMessage {
   chatId: string;
   chatType: 'direct' | 'group';
   threadId?: string;
-  guildId?: string;
   text: string;
   mediaAttachments?: MediaAttachment[];
   replyToMessageId?: string;
