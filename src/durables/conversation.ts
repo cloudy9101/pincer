@@ -28,6 +28,12 @@ export interface ReplyDestination {
   interactionToken?: string;
 }
 
+export interface InlineImage {
+  /** Base64-encoded image data (no data-URI prefix). */
+  data: string;
+  mimeType: string;
+}
+
 export interface MessageInput {
   text: string;
   sessionKey: string;
@@ -41,6 +47,8 @@ export interface MessageInput {
   temperature?: number;
   maxTokens?: number;
   replyTo: ReplyDestination;
+  /** Inline images to attach to this message (for vision-capable models). */
+  images?: InlineImage[];
 }
 
 export interface MessageResult {
@@ -227,7 +235,8 @@ export class ConversationSqlDO extends DurableObject<Env> {
     }
 
     // Add user message, stash replyTo for the alarm
-    this.appendMessages([{ role: 'user', content: input.text }]);
+    const userContent = buildUserContent(input.text, input.images);
+    this.appendMessages([{ role: 'user', content: userContent }]);
     this.state_.messageCount++;
     this.saveState(this.state_);
 
@@ -360,10 +369,11 @@ export class ConversationSqlDO extends DurableObject<Env> {
       }
     }
 
-    // Extract the user's text from the last history message
+    // Extract the user's text from the last history message (may be multipart)
     const lastMsg = this.history[this.history.length - 1];
-    const userText = lastMsg && lastMsg.role === 'user' && typeof lastMsg.content === 'string'
-      ? lastMsg.content : '';
+    const userText = lastMsg && lastMsg.role === 'user'
+      ? extractTextFromContent(lastMsg.content)
+      : '';
 
     // Start typing indicator for Telegram
     const typingInterval = this.startTypingIndicator(replyTo);
@@ -824,6 +834,33 @@ export class ConversationSqlDO extends DurableObject<Env> {
       console.error('Failed to log usage:', e);
     }
   }
+}
+
+/** Build the ModelMessage content for a user turn, injecting images when present. */
+function buildUserContent(
+  text: string,
+  images?: InlineImage[],
+): string | import('ai').UserContent {
+  if (!images || images.length === 0) return text;
+
+  const parts: import('ai').UserContent = [];
+  if (text) parts.push({ type: 'text', text });
+  for (const img of images) {
+    parts.push({ type: 'image', image: img.data, mediaType: img.mimeType as `image/${string}` });
+  }
+  return parts;
+}
+
+/** Extract the plain text portion from a ModelMessage content value. */
+function extractTextFromContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((p): p is { type: 'text'; text: string } => typeof p === 'object' && p !== null && p.type === 'text')
+      .map((p) => p.text)
+      .join(' ');
+  }
+  return '';
 }
 
 /** Build a user-friendly error message based on the classified LLM error. */

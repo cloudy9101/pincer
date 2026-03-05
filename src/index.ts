@@ -19,6 +19,8 @@ import { registerMCPServer, removeMCPServer, updateMCPServer, updateMCPServerHea
 import { getMCPServer } from './mcp/loader.ts';
 import { discoverMCPTools } from './mcp/client.ts';
 import type { IncomingMessage } from './channels/types.ts';
+import { downloadTelegramFile } from './channels/telegram/files.ts';
+import type { InlineImage } from './durables/conversation.ts';
 import { handleConnect, handleCallback } from './oauth/flow.ts';
 import { revokeConnection } from './oauth/tokens.ts';
 import { runCronJobs } from './cron/runner.ts';
@@ -188,9 +190,45 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
 
     log('info', 'DO dispatch', { sessionKey }, { traceId, handler: 'do-dispatch' });
 
+    // Resolve any media attachments before dispatching to the DO
+    let messageText = msg.text;
+    const images: InlineImage[] = [];
+
+    if (msg.mediaAttachments && msg.mediaAttachments.length > 0) {
+      for (const attachment of msg.mediaAttachments) {
+        if (attachment.type === 'image') {
+          const file = await downloadTelegramFile(attachment.fileId, env.TELEGRAM_BOT_TOKEN, attachment.mimeType);
+          if (file) {
+            const base64 = arrayBufferToBase64(file.data);
+            images.push({ data: base64, mimeType: file.mimeType });
+          }
+        } else if (attachment.type === 'audio') {
+          // Transcribe audio using Workers AI Whisper
+          const file = await downloadTelegramFile(attachment.fileId, env.TELEGRAM_BOT_TOKEN, attachment.mimeType);
+          if (file) {
+            try {
+              const audioBytes = new Uint8Array(file.data);
+              const result = await env.AI.run(
+                '@cf/openai/whisper-large-v3-turbo' as Parameters<typeof env.AI.run>[0],
+                { audio: [...audioBytes] },
+              ) as { text?: string };
+              if (result.text?.trim()) {
+                const prefix = messageText ? '\n' : '';
+                messageText = messageText + prefix + `[Voice message]: ${result.text.trim()}`;
+              }
+            } catch (e) {
+              log('warn', 'Whisper transcription failed', { error: String(e) });
+              const prefix = messageText ? '\n' : '';
+              messageText = messageText + prefix + '[Voice message: transcription unavailable]';
+            }
+          }
+        }
+      }
+    }
+
     // DO sends the reply directly — await ensures RPC is dispatched
     await stub.message({
-      text: msg.text,
+      text: messageText,
       sessionKey,
       agentId: route.agentId,
       userId,
@@ -207,6 +245,7 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
         chatType: msg.chatType,
         channelMessageId: msg.channelMessageId,
       },
+      images: images.length > 0 ? images : undefined,
     });
   } catch (error) {
     log('error', 'Error processing message', { error: String(error), senderId: msg.senderId }, { traceId, handler: 'telegram' });
@@ -715,4 +754,13 @@ function json(data: unknown, status = 200): Response {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]!);
+  }
+  return btoa(binary);
 }

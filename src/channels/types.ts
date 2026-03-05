@@ -1,5 +1,11 @@
 export type Channel = 'telegram' | 'discord' | 'webchat';
 
+export interface MediaAttachment {
+  fileId: string;
+  type: 'image' | 'audio';
+  mimeType?: string;
+}
+
 export interface IncomingMessage {
   channel: Channel;
   channelMessageId: string;
@@ -10,7 +16,7 @@ export interface IncomingMessage {
   threadId?: string;
   guildId?: string;
   text: string;
-  mediaUrls?: string[];
+  mediaAttachments?: MediaAttachment[];
   replyToMessageId?: string;
   raw: unknown;
 }
