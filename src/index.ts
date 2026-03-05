@@ -19,6 +19,8 @@ import { registerMCPServer, removeMCPServer, updateMCPServer, updateMCPServerHea
 import { getMCPServer } from './mcp/loader.ts';
 import { discoverMCPTools } from './mcp/client.ts';
 import type { IncomingMessage } from './channels/types.ts';
+import { downloadTelegramFile } from './channels/telegram/files.ts';
+import type { InlineImage } from './durables/conversation.ts';
 import { handleConnect, handleCallback } from './oauth/flow.ts';
 import { revokeConnection } from './oauth/tokens.ts';
 import { runCronJobs } from './cron/runner.ts';
@@ -67,8 +69,13 @@ export default {
       }
 
       // Admin SPA (static assets)
+      // Try the exact asset first; fall back to the SPA shell for client-side routes.
       if (path.startsWith('/dashboard/') || path === '/dashboard') {
-        return env.ASSETS.fetch(request);
+        const res = await env.ASSETS.fetch(request);
+        if (res.status === 404) {
+          return env.ASSETS.fetch(new Request(new URL('/dashboard/index.html', request.url).href));
+        }
+        return res;
       }
 
       // Health check
@@ -134,7 +141,8 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
             text: `You're not on the allowlist. Your pairing code is: ${code}\nAsk the owner to approve it.`,
             replyToMessageId: msg.channelMessageId,
           },
-          env.TELEGRAM_BOT_TOKEN
+          env.TELEGRAM_BOT_TOKEN,
+          env.TELEGRAM_API_BASE,
         );
         return;
       }
@@ -154,13 +162,14 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
             text: 'You are being rate limited. Please wait a moment.',
             replyToMessageId: msg.channelMessageId,
           },
-          env.TELEGRAM_BOT_TOKEN
+          env.TELEGRAM_BOT_TOKEN,
+          env.TELEGRAM_API_BASE,
         );
         return;
       }
 
       // Send typing indicator
-      await sendTelegramChatAction(msg.chatId, 'typing', env.TELEGRAM_BOT_TOKEN);
+      await sendTelegramChatAction(msg.chatId, 'typing', env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_API_BASE);
     }
 
     // Resolve route
@@ -181,9 +190,45 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
 
     log('info', 'DO dispatch', { sessionKey }, { traceId, handler: 'do-dispatch' });
 
+    // Resolve any media attachments before dispatching to the DO
+    let messageText = msg.text;
+    const images: InlineImage[] = [];
+
+    if (msg.mediaAttachments && msg.mediaAttachments.length > 0) {
+      for (const attachment of msg.mediaAttachments) {
+        if (attachment.type === 'image') {
+          const file = await downloadTelegramFile(attachment.fileId, env.TELEGRAM_BOT_TOKEN, attachment.mimeType);
+          if (file) {
+            const base64 = arrayBufferToBase64(file.data);
+            images.push({ data: base64, mimeType: file.mimeType });
+          }
+        } else if (attachment.type === 'audio') {
+          // Transcribe audio using Workers AI Whisper
+          const file = await downloadTelegramFile(attachment.fileId, env.TELEGRAM_BOT_TOKEN, attachment.mimeType);
+          if (file) {
+            try {
+              const audioBytes = new Uint8Array(file.data);
+              const result = await env.AI.run(
+                '@cf/openai/whisper-large-v3-turbo' as Parameters<typeof env.AI.run>[0],
+                { audio: [...audioBytes] },
+              ) as { text?: string };
+              if (result.text?.trim()) {
+                const prefix = messageText ? '\n' : '';
+                messageText = messageText + prefix + `[Voice message]: ${result.text.trim()}`;
+              }
+            } catch (e) {
+              log('warn', 'Whisper transcription failed', { error: String(e) });
+              const prefix = messageText ? '\n' : '';
+              messageText = messageText + prefix + '[Voice message: transcription unavailable]';
+            }
+          }
+        }
+      }
+    }
+
     // DO sends the reply directly — await ensures RPC is dispatched
     await stub.message({
-      text: msg.text,
+      text: messageText,
       sessionKey,
       agentId: route.agentId,
       userId,
@@ -200,6 +245,7 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
         chatType: msg.chatType,
         channelMessageId: msg.channelMessageId,
       },
+      images: images.length > 0 ? images : undefined,
     });
   } catch (error) {
     log('error', 'Error processing message', { error: String(error), senderId: msg.senderId }, { traceId, handler: 'telegram' });
@@ -210,7 +256,8 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
           chatId: msg.chatId,
           text: 'An error occurred. Please try again.',
         },
-        env.TELEGRAM_BOT_TOKEN
+        env.TELEGRAM_BOT_TOKEN,
+        env.TELEGRAM_API_BASE,
       );
     } catch {
       // Best effort
@@ -280,13 +327,14 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
 
   // Agents
   if (path === '/admin/agents' && request.method === 'GET') {
-    const { results } = await env.DB.prepare('SELECT * FROM agents ORDER BY id').all();
+    const { results } = await env.DB.prepare('SELECT id, display_name as name, model, system_prompt, max_tokens as max_steps, created_at, updated_at FROM agents ORDER BY id').all();
     return json(results);
   }
 
   if (path === '/admin/agents' && request.method === 'POST') {
     const agent = await request.json() as {
       id: string;
+      name?: string;
       display_name?: string;
       model?: string;
       system_prompt?: string;
@@ -298,7 +346,7 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
       'INSERT INTO agents (id, display_name, model, system_prompt, thinking_level, temperature, max_tokens) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ).bind(
       agent.id,
-      agent.display_name ?? null,
+      agent.display_name ?? agent.name ?? null,
       agent.model ?? DEFAULTS.model,
       agent.system_prompt ?? null,
       agent.thinking_level ?? DEFAULTS.thinkingLevel,
@@ -327,6 +375,14 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
       await env.DB.prepare(`UPDATE agents SET ${fields.join(', ')} WHERE id = ?`).bind(...values).run();
       await env.CACHE.delete(`agent:${agentId}`);
     }
+    return json({ ok: true });
+  }
+
+  if (path.startsWith('/admin/agents/') && request.method === 'DELETE') {
+    const agentId = path.split('/').pop()!;
+
+    await env.DB.prepare(`DELETE FROM agents WHERE id = ?`).bind(agentId).run();
+    await env.CACHE.delete(`agent:${agentId}`);
     return json({ ok: true });
   }
 
@@ -698,4 +754,13 @@ function json(data: unknown, status = 200): Response {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]!);
+  }
+  return btoa(binary);
 }

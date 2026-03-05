@@ -1,11 +1,20 @@
 import type { OutgoingMessage } from '../types.ts';
 import { log } from '../../utils/logger.ts';
 
-const TELEGRAM_API = 'https://api.telegram.org/bot';
+const DEFAULT_TELEGRAM_API = 'https://api.telegram.org';
 const MAX_MESSAGE_LENGTH = 4096;
 
-export async function sendTelegramMessage(message: OutgoingMessage, botToken: string): Promise<void> {
+function telegramBase(apiBase?: string): string {
+  return (apiBase ?? DEFAULT_TELEGRAM_API) + '/bot';
+}
+
+export async function sendTelegramMessage(
+  message: OutgoingMessage,
+  botToken: string,
+  apiBase?: string,
+): Promise<void> {
   const chunks = splitMessage(message.text, MAX_MESSAGE_LENGTH);
+  const base = telegramBase(apiBase);
 
   for (const chunk of chunks) {
     const body: Record<string, unknown> = {
@@ -27,7 +36,7 @@ export async function sendTelegramMessage(message: OutgoingMessage, botToken: st
       body.message_thread_id = Number(message.threadId);
     }
 
-    const response = await fetch(`${TELEGRAM_API}${botToken}/sendMessage`, {
+    const response = await fetch(`${base}${botToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -40,7 +49,7 @@ export async function sendTelegramMessage(message: OutgoingMessage, botToken: st
       // Retry without parse mode if markdown failed
       if (body.parse_mode) {
         delete body.parse_mode;
-        await fetch(`${TELEGRAM_API}${botToken}/sendMessage`, {
+        await fetch(`${base}${botToken}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -55,7 +64,9 @@ export async function sendTelegramMessage(message: OutgoingMessage, botToken: st
 export async function sendTelegramMessageAndGetId(
   message: OutgoingMessage,
   botToken: string,
+  apiBase?: string,
 ): Promise<string> {
+  const base = telegramBase(apiBase);
   const body: Record<string, unknown> = {
     chat_id: message.chatId,
     text: message.text,
@@ -69,7 +80,7 @@ export async function sendTelegramMessageAndGetId(
     body.message_thread_id = Number(message.threadId);
   }
 
-  const response = await fetch(`${TELEGRAM_API}${botToken}/sendMessage`, {
+  const response = await fetch(`${base}${botToken}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -89,8 +100,10 @@ export async function editTelegramMessage(
   messageId: string,
   text: string,
   botToken: string,
+  apiBase?: string,
 ): Promise<void> {
-  const response = await fetch(`${TELEGRAM_API}${botToken}/editMessageText`, {
+  const base = telegramBase(apiBase);
+  const response = await fetch(`${base}${botToken}/editMessageText`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -108,8 +121,14 @@ export async function editTelegramMessage(
   }
 }
 
-export async function sendTelegramChatAction(chatId: string, action: string, botToken: string): Promise<void> {
-  const response = await fetch(`${TELEGRAM_API}${botToken}/sendChatAction`, {
+export async function sendTelegramChatAction(
+  chatId: string,
+  action: string,
+  botToken: string,
+  apiBase?: string,
+): Promise<void> {
+  const base = telegramBase(apiBase);
+  const response = await fetch(`${base}${botToken}/sendChatAction`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: chatId, action }),
