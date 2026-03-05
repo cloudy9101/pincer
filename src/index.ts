@@ -134,7 +134,8 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
             text: `You're not on the allowlist. Your pairing code is: ${code}\nAsk the owner to approve it.`,
             replyToMessageId: msg.channelMessageId,
           },
-          env.TELEGRAM_BOT_TOKEN
+          env.TELEGRAM_BOT_TOKEN,
+          env.TELEGRAM_API_BASE,
         );
         return;
       }
@@ -154,13 +155,14 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
             text: 'You are being rate limited. Please wait a moment.',
             replyToMessageId: msg.channelMessageId,
           },
-          env.TELEGRAM_BOT_TOKEN
+          env.TELEGRAM_BOT_TOKEN,
+          env.TELEGRAM_API_BASE,
         );
         return;
       }
 
       // Send typing indicator
-      await sendTelegramChatAction(msg.chatId, 'typing', env.TELEGRAM_BOT_TOKEN);
+      await sendTelegramChatAction(msg.chatId, 'typing', env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_API_BASE);
     }
 
     // Resolve route
@@ -210,7 +212,8 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
           chatId: msg.chatId,
           text: 'An error occurred. Please try again.',
         },
-        env.TELEGRAM_BOT_TOKEN
+        env.TELEGRAM_BOT_TOKEN,
+        env.TELEGRAM_API_BASE,
       );
     } catch {
       // Best effort

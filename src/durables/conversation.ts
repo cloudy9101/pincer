@@ -739,7 +739,7 @@ export class ConversationSqlDO extends DurableObject<Env> {
 
   private startTypingIndicator(dest: ReplyDestination): ReturnType<typeof setInterval> | null {
     if (dest.channel !== 'telegram') return null;
-    const send = () => sendTelegramChatAction(dest.chatId, 'typing', this.env.TELEGRAM_BOT_TOKEN).catch(() => {});
+    const send = () => sendTelegramChatAction(dest.chatId, 'typing', this.env.TELEGRAM_BOT_TOKEN, this.env.TELEGRAM_API_BASE).catch(() => {});
     send();
     return setInterval(send, 4_000);
   }
@@ -755,15 +755,16 @@ export class ConversationSqlDO extends DurableObject<Env> {
             replyToMessageId: dest.chatType === 'group' ? dest.channelMessageId : undefined,
           },
           this.env.TELEGRAM_BOT_TOKEN,
+          this.env.TELEGRAM_API_BASE,
         );
         break;
       case 'discord':
         if (dest.interactionToken) {
           await editDiscordInteractionResponse(
-            this.env.DISCORD_APP_ID,
+            this.env.DISCORD_APP_ID!,
             dest.interactionToken,
             text,
-            this.env.DISCORD_BOT_TOKEN,
+            this.env.DISCORD_BOT_TOKEN!,
           );
         }
         break;
@@ -784,10 +785,11 @@ export class ConversationSqlDO extends DurableObject<Env> {
             replyToMessageId: dest.chatType === 'group' ? dest.channelMessageId : undefined,
           },
           this.env.TELEGRAM_BOT_TOKEN,
+          this.env.TELEGRAM_API_BASE,
         );
       case 'discord':
         if (dest.interactionToken) {
-          await editDiscordOriginal(this.env.DISCORD_APP_ID, dest.interactionToken, text);
+          await editDiscordOriginal(this.env.DISCORD_APP_ID!, dest.interactionToken, text);
           return 'discord'; // sentinel — Discord edits use interactionToken, not a message ID
         }
         return undefined;
@@ -800,11 +802,11 @@ export class ConversationSqlDO extends DurableObject<Env> {
   private async editPartialReply(dest: ReplyDestination, text: string, messageId: string): Promise<void> {
     switch (dest.channel) {
       case 'telegram':
-        await editTelegramMessage(dest.chatId, messageId, text, this.env.TELEGRAM_BOT_TOKEN);
+        await editTelegramMessage(dest.chatId, messageId, text, this.env.TELEGRAM_BOT_TOKEN, this.env.TELEGRAM_API_BASE);
         break;
       case 'discord':
         if (dest.interactionToken) {
-          await editDiscordOriginal(this.env.DISCORD_APP_ID, dest.interactionToken, text);
+          await editDiscordOriginal(this.env.DISCORD_APP_ID!, dest.interactionToken, text);
         }
         break;
     }
