@@ -28,10 +28,8 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      - name: Build admin dashboard
-        run: cd admin && bun install --frozen-lockfile && bun run build
-
       - name: Deploy Worker
+        # wrangler deploy runs the [build] hook (admin SPA) before uploading
         run: bunx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
