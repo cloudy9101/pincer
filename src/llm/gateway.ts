@@ -2,6 +2,7 @@ import type { LanguageModel } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import type { Env } from '../env.ts';
 import { routeModel, WORKERS_AI_AUTO, type RouterContext } from './router.ts';
+import { getMockModel } from './mock-model.ts';
 
 export function parseModelString(model: string): { provider: string; model: string } {
   const slash = model.indexOf('/');
@@ -18,6 +19,9 @@ export async function resolveModel(
   ctx: RouterContext,
   env: Env,
 ): Promise<LanguageModel> {
+  if (env.MOCK_AI_RESPONSE) {
+    return getMockModel(env.MOCK_AI_RESPONSE);
+  }
   if (modelString === WORKERS_AI_AUTO) {
     const resolved = await routeModel(ctx, env);
     return getModel(`workers-ai/${resolved}`, env);
@@ -30,6 +34,9 @@ export async function resolveModel(
  * All inference runs through the env.AI Workers AI binding — no external keys needed.
  */
 export function getModel(modelString: string, env: Env): LanguageModel {
+  if (env.MOCK_AI_RESPONSE) {
+    return getMockModel(env.MOCK_AI_RESPONSE);
+  }
   const { model } = parseModelString(modelString);
   const workersai = createWorkersAI({ binding: env.AI });
   return workersai(model) as LanguageModel;

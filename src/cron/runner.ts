@@ -77,7 +77,7 @@ async function runJob(env: Env, job: CronJobRow, scheduledTime: number): Promise
         env.TELEGRAM_BOT_TOKEN,
       );
     } else if (job.reply_channel === 'discord') {
-      await sendDiscordChannelMessage(job.reply_chat_id, result.text, env.DISCORD_BOT_TOKEN);
+      await sendDiscordChannelMessage(job.reply_chat_id, result.text, env.DISCORD_BOT_TOKEN!);
     }
   } catch (e) {
     log('error', 'Cron job failed', { jobId: job.id, name: job.name, error: String(e) });

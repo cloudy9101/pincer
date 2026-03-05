@@ -22,7 +22,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
   if (res.status === 401) {
     clearToken();
-    window.location.href = '/dashboard/login';
+    // window.location.href = '/dashboard/login';
     throw new Error('Unauthorized');
   }
 

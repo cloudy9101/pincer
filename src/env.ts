@@ -22,6 +22,11 @@ export interface Env {
   // Secrets - Telegram
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
+
+  // Secrets - Discord
+  DISCORD_APP_ID?: string;
+  DISCORD_BOT_TOKEN?: string;
+  DISCORD_PUBLIC_KEY?: string;
   // Telegram user ID of the bot owner. Set this when deploying so that user is
   // automatically approved as owner on first contact. When unset, the first
   // user to send a message is auto-approved (original behaviour).
@@ -46,5 +51,11 @@ export interface Env {
   CF_API_TOKEN?: string;
   CF_ACCESS_CLIENT_ID?: string;
   CF_ACCESS_CLIENT_SECRET?: string;
+
+  // Test / CI overrides (set in .dev.vars for local testing)
+  /** When set, bypasses Workers AI and returns this string as the LLM response. */
+  MOCK_AI_RESPONSE?: string;
+  /** Override the Telegram Bot API base URL (e.g. http://localhost:9999 for tests). */
+  TELEGRAM_API_BASE?: string;
 
 }

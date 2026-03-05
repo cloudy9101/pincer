@@ -7,20 +7,23 @@ import ErrorBanner from '../components/ErrorBanner';
 import ConfirmDialog from '../components/ConfirmDialog';
 
 interface AgentFormData {
+  id: string;
   name: string;
   model: string;
   system_prompt: string;
   max_steps: string;
 }
 
-const emptyForm: AgentFormData = { name: '', model: '', system_prompt: '', max_steps: '20' };
+const emptyForm: AgentFormData = { id: '', name: '', model: '', system_prompt: '', max_steps: '20' };
 
 function AgentForm({
   initial,
+  isEdit,
   onSave,
   onCancel,
 }: {
   initial?: AgentFormData;
+  isEdit?: boolean;
   onSave: (data: AgentFormData) => Promise<void>;
   onCancel: () => void;
 }) {
@@ -56,6 +59,7 @@ function AgentForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      {!isEdit && field('Agent ID', 'id', 'text', true)}
       {field('Name', 'name', 'text', true)}
       {field('Model', 'model', 'text', true)}
       <div>
@@ -95,7 +99,7 @@ export default function Agents() {
   useEffect(() => { load(); }, []);
 
   async function handleCreate(data: AgentFormData) {
-    await createAgent({ ...data, max_steps: parseInt(data.max_steps) || 20 });
+    await createAgent({ id: data.id, name: data.name, model: data.model, system_prompt: data.system_prompt, max_steps: parseInt(data.max_steps) || 20 });
     setShowCreate(false);
     load();
   }
@@ -136,7 +140,8 @@ export default function Agents() {
         <Card>
           <h2 className="text-base font-semibold text-gray-900 mb-4">Edit Agent</h2>
           <AgentForm
-            initial={{ name: editing.name, model: editing.model, system_prompt: editing.system_prompt ?? '', max_steps: String(editing.max_steps ?? 20) }}
+            initial={{ id: editing.id, name: editing.name, model: editing.model, system_prompt: editing.system_prompt ?? '', max_steps: String(editing.max_steps ?? 20) }}
+            isEdit
             onSave={handleUpdate}
             onCancel={() => setEditing(null)}
           />
@@ -152,7 +157,7 @@ export default function Agents() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  {['Name', 'Model', 'Max Steps', 'Created', ''].map(h => (
+                  {['Agent ID', 'Model', 'Max Steps', 'Created', ''].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -160,7 +165,7 @@ export default function Agents() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {agents.map(a => (
                   <tr key={a.id}>
-                    <td className="px-4 py-3 text-sm font-medium text-gray-900">{a.name}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-gray-900">{a.id}</td>
                     <td className="px-4 py-3 text-sm text-gray-500">{a.model}</td>
                     <td className="px-4 py-3 text-sm text-gray-500">{a.max_steps ?? 20}</td>
                     <td className="px-4 py-3 text-sm text-gray-500">{new Date(a.created_at).toLocaleDateString()}</td>
@@ -180,7 +185,7 @@ export default function Agents() {
               <Card key={a.id}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-gray-900">{a.name}</p>
+                    <p className="text-sm font-semibold text-gray-900">{a.id}</p>
                     <p className="text-xs text-gray-500 mt-0.5">{a.model} · {a.max_steps ?? 20} steps</p>
                   </div>
                   <div className="flex gap-3 shrink-0">
