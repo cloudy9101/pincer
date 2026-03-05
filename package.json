@@ -5,8 +5,7 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "cd admin && bun run build && cd .. && wrangler d1 migrations apply DB --remote && wrangler deploy",
-    "deploy:worker": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
     "migrate:local": "wrangler d1 migrations apply DB --local",
     "migrate:remote": "wrangler d1 migrations apply DB --remote",
     "typecheck": "tsc --noEmit"

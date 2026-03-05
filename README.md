@@ -111,19 +111,20 @@ Open `https://pincer-gateway.<subdomain>.workers.dev/dashboard/` and log in with
 ### Steps
 
 ```bash
-# 1. Clone and install
+# 1. Clone and install root dependencies
 git clone https://github.com/cloudy9101/pincer.git
 cd pincer
-bun install && cd admin && bun install && cd ..
+bun install
 
 # 2. Authenticate
 wrangler login
 
-# 3. Deploy — Wrangler auto-provisions D1, KV, R2, and Vectorize on first run
+# 3. Deploy — Wrangler runs the [build] step (admin SPA), applies migrations,
+#    and auto-provisions D1, KV, R2, and Vectorize on first run
 bun run deploy
 ```
 
-`bun run deploy` builds the admin SPA, applies D1 migrations, and deploys the Worker. Wrangler automatically creates any missing resources and updates `wrangler.toml` with the generated IDs.
+`bun run deploy` runs `wrangler deploy`, which automatically builds the admin SPA via the `[build]` hook, applies D1 migrations, and provisions any missing Cloudflare resources on first run.
 
 Then set secrets and register webhooks as described above.
 

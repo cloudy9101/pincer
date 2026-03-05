@@ -1,8 +1,8 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Pincer Gateway — Cloudflare Workers configuration
 #
-# New deployment?  Run `scripts/setup.sh` to provision all Cloudflare resources
-# and get the IDs to paste below.  Then follow the Quick Start in README.md.
+# New deployment?  Click the Deploy button in README.md — Cloudflare provisions
+# all resources automatically.  For manual CLI setup see docs/deployment.md.
 # ──────────────────────────────────────────────────────────────────────────────
 
 name = "pincer-gateway"
@@ -78,8 +78,15 @@ index_name = "pincer-memory"
 [triggers]
 crons = ["0 * * * *"]
 
+# ── Build ──────────────────────────────────────────────────────────────────────
+# Runs automatically before `wrangler deploy` (locally and in Workers Builds).
+# Bun is the package manager; bun.lock ensures reproducible installs.
+
+[build]
+command = "cd admin && bun install --frozen-lockfile && bun run build"
+
 # ── Admin SPA ──────────────────────────────────────────────────────────────────
-# Built from admin/ by `bun run deploy`; served at /dashboard/.
+# Output of the build step above; served at /dashboard/.
 
 [assets]
 directory = "./admin/dist"
