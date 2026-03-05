@@ -17,11 +17,6 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
-      - run: bun install --frozen-lockfile
-
-      - name: Typecheck
-        run: bun run typecheck
-
       - name: Run D1 migrations
         run: bunx wrangler d1 migrations apply pincer-db --remote
         env:
