@@ -16,8 +16,17 @@ const WEBHOOK_SECRET = 'test-webhook-secret';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+const authHeaders = { Authorization: `Bearer ${ADMIN_TOKEN}` };
+
+/** Mark onboarding as complete so the SPA doesn't redirect to /setup. */
+async function completeSetupViaAPI(page: Page): Promise<void> {
+  await page.request.post(`${BASE_URL}/admin/setup/complete`, { headers: authHeaders });
+}
+
 /** Authenticate the admin SPA by injecting the token into localStorage. */
 async function loginSPA(page: Page): Promise<void> {
+  // Ensure setup is marked complete so AuthGuard doesn't redirect to /setup
+  await completeSetupViaAPI(page);
   await page.goto(`${BASE_URL}/dashboard/`);
   // Key must match TOKEN_KEY in admin/src/auth.ts
   await page.evaluate((token) => localStorage.setItem('pincer_admin_token', token), ADMIN_TOKEN);
@@ -125,6 +134,43 @@ test.describe('Admin SPA — auth gate', () => {
     await loginSPA(page);
     // After login we should see the dashboard — not the login form
     await expect(page.getByLabel(/admin token|token/i)).not.toBeVisible();
+  });
+});
+
+// ─── Admin SPA — Setup onboarding ────────────────────────────────────────────
+
+test.describe('Admin SPA — setup onboarding', () => {
+  test('redirects to /setup when setup is not completed', async ({ page }) => {
+    // Login WITHOUT completing setup first
+    await page.goto(`${BASE_URL}/dashboard/`);
+    await page.evaluate((token) => localStorage.setItem('pincer_admin_token', token), ADMIN_TOKEN);
+    await page.goto(`${BASE_URL}/dashboard/`);
+
+    // AuthGuard should redirect to /setup
+    await expect(page).toHaveURL(/setup/);
+    await expect(page.getByRole('heading', { name: /setup/i })).toBeVisible();
+  });
+
+  test('setup page shows onboarding steps', async ({ page }) => {
+    await page.goto(`${BASE_URL}/dashboard/`);
+    await page.evaluate((token) => localStorage.setItem('pincer_admin_token', token), ADMIN_TOKEN);
+    await page.goto(`${BASE_URL}/dashboard/setup`);
+
+    await expect(page.getByText(/Connect Telegram/i)).toBeVisible();
+    await expect(page.getByText(/Create an Agent/i)).toBeVisible();
+    await expect(page.getByText(/Add Users/i)).toBeVisible();
+  });
+
+  test('completing setup allows access to dashboard', async ({ page }) => {
+    // First mark setup complete via API
+    await completeSetupViaAPI(page);
+
+    // Now login — should reach dashboard, not setup
+    await page.goto(`${BASE_URL}/dashboard/`);
+    await page.evaluate((token) => localStorage.setItem('pincer_admin_token', token), ADMIN_TOKEN);
+    await page.goto(`${BASE_URL}/dashboard/`);
+
+    await expect(page.getByRole('heading', { name: /dashboard/i })).toBeVisible();
   });
 });
 
@@ -246,19 +292,19 @@ test.describe('Admin SPA — agents CRUD', () => {
 // ─── Admin API (raw) ──────────────────────────────────────────────────────────
 
 test.describe('Admin API', () => {
-  const authHeaders = { Authorization: `Bearer ${ADMIN_TOKEN}` };
-
   test('returns 401 without Authorization header', async ({ page }) => {
     const res = await page.request.get(`${BASE_URL}/admin/status`);
     expect(res.status()).toBe(401);
   });
 
-  test('GET /admin/status returns counts', async ({ page }) => {
+  test('GET /admin/status returns counts and setupCompleted flag', async ({ page }) => {
     const res = await page.request.get(`${BASE_URL}/admin/status`, { headers: authHeaders });
     expect(res.ok()).toBe(true);
     const body = await res.json();
     expect(body).toHaveProperty('agents');
     expect(body).toHaveProperty('sessions');
+    expect(body).toHaveProperty('setupCompleted');
+    expect(typeof body.setupCompleted).toBe('boolean');
   });
 
   test('GET /admin/agents returns array', async ({ page }) => {
@@ -282,6 +328,37 @@ test.describe('Admin API', () => {
     expect(res.ok()).toBe(true);
     const body = await res.json();
     expect(body.ok).toBe(true);
+  });
+
+  test('POST /admin/setup/complete marks setup as done', async ({ page }) => {
+    const res = await page.request.post(`${BASE_URL}/admin/setup/complete`, { headers: authHeaders });
+    expect(res.ok()).toBe(true);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+
+    // Verify the status now reflects setupCompleted
+    const status = await page.request.get(`${BASE_URL}/admin/status`, { headers: authHeaders });
+    const statusBody = await status.json();
+    expect(statusBody.setupCompleted).toBe(true);
+  });
+
+  test('GET /admin/telegram/webhook returns webhook info', async ({ page }) => {
+    const res = await page.request.get(`${BASE_URL}/admin/telegram/webhook`, { headers: authHeaders });
+    expect(res.ok()).toBe(true);
+    const body = await res.json();
+    expect(body).toHaveProperty('ok');
+    expect(body).toHaveProperty('result');
+    expect(body.result).toHaveProperty('url');
+  });
+
+  test('POST /admin/telegram/setup registers webhook and commands', async ({ page }) => {
+    const res = await page.request.post(`${BASE_URL}/admin/telegram/setup`, { headers: authHeaders });
+    expect(res.ok()).toBe(true);
+    const body = await res.json();
+    expect(body).toHaveProperty('webhook');
+    expect(body).toHaveProperty('commands');
+    expect(body.webhook.ok).toBe(true);
+    expect(body.commands.ok).toBe(true);
   });
 });
 
