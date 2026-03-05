@@ -288,13 +288,14 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
 
   // Agents
   if (path === '/admin/agents' && request.method === 'GET') {
-    const { results } = await env.DB.prepare('SELECT * FROM agents ORDER BY id').all();
+    const { results } = await env.DB.prepare('SELECT id, display_name as name, model, system_prompt, max_tokens as max_steps, created_at, updated_at FROM agents ORDER BY id').all();
     return json(results);
   }
 
   if (path === '/admin/agents' && request.method === 'POST') {
     const agent = await request.json() as {
       id: string;
+      name?: string;
       display_name?: string;
       model?: string;
       system_prompt?: string;
@@ -306,7 +307,7 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
       'INSERT INTO agents (id, display_name, model, system_prompt, thinking_level, temperature, max_tokens) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ).bind(
       agent.id,
-      agent.display_name ?? null,
+      agent.display_name ?? agent.name ?? null,
       agent.model ?? DEFAULTS.model,
       agent.system_prompt ?? null,
       agent.thinking_level ?? DEFAULTS.thinkingLevel,

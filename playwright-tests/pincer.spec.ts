@@ -110,12 +110,13 @@ test.describe('Admin SPA — auth gate', () => {
     await page.goto(`${BASE_URL}/dashboard/`);
     // Login page must ask for a token (no sidebar should be visible)
     await expect(page.getByRole('heading', { name: /pincer|admin|login/i })).toBeVisible();
-    await expect(page.getByRole('textbox')).toBeVisible();
+    // Use getByLabel because <input type="password"> is not exposed as role=textbox
+    await expect(page.getByLabel(/admin token|token/i)).toBeVisible();
   });
 
   test('submitting invalid token shows error', async ({ page }) => {
     await page.goto(`${BASE_URL}/dashboard/`);
-    await page.getByRole('textbox').fill('wrong-token');
+    await page.getByLabel(/admin token|token/i).fill('wrong-token');
     await page.getByRole('button', { name: /save|connect|login|sign|submit/i }).click();
     await expect(page.getByText(/invalid|unauthori|error/i)).toBeVisible();
   });
@@ -123,7 +124,7 @@ test.describe('Admin SPA — auth gate', () => {
   test('valid token persists and redirects to dashboard', async ({ page }) => {
     await loginSPA(page);
     // After login we should see the dashboard — not the login form
-    await expect(page.getByRole('textbox')).not.toBeVisible();
+    await expect(page.getByLabel(/admin token|token/i)).not.toBeVisible();
   });
 });
 
