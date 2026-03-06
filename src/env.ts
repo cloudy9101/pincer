@@ -19,8 +19,8 @@ export interface Env {
   // Vectorize
   MEMORY: VectorizeIndex;
 
-  // Secrets - Telegram
-  TELEGRAM_BOT_TOKEN: string;
+  // Secrets - Telegram (optional — can be provided during onboarding instead)
+  TELEGRAM_BOT_TOKEN?: string;
   /** @deprecated — now stored in D1 config and auto-generated during setup. Env var is a fallback. */
   TELEGRAM_WEBHOOK_SECRET?: string;
 
@@ -33,9 +33,17 @@ export interface Env {
   // user to send a message is auto-approved (original behaviour).
   TELEGRAM_OWNER_ID?: string;
 
+  // Telegram username of the deploying user. Provided at deploy time so the
+  // onboarding flow can verify identity via the Telegram Login Widget.
+  TELEGRAM_OWNER_USERNAME?: string;
+
   // Secrets - Security
+  // ENCRYPTION_KEY: auto-generated and stored in KV on first dashboard visit if not set via env var.
+  // At request start the worker resolves it from KV and injects it here so all downstream code works.
   ENCRYPTION_KEY: string;
-  ADMIN_AUTH_TOKEN: string;
+  // ADMIN_AUTH_TOKEN: optional — when unset, bootstrap mode allows unauthenticated admin access
+  // until Telegram Login creates a session.
+  ADMIN_AUTH_TOKEN?: string;
 
   // Secrets - OAuth providers
   GOOGLE_OAUTH_CLIENT_ID?: string;

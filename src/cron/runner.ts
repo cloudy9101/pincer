@@ -4,6 +4,7 @@ import { sendTelegramMessage } from '../channels/telegram/send.ts';
 import { getAgent } from '../config/loader.ts';
 import { DEFAULTS } from '../config/defaults.ts';
 import { log } from '../utils/logger.ts';
+import { resolveBotToken } from '../security/bootstrap.ts';
 
 interface CronJobRow {
   id: string;
@@ -71,10 +72,13 @@ async function runJob(env: Env, job: CronJobRow, scheduledTime: number): Promise
     if (!result.text || !job.reply_channel || !job.reply_chat_id) return;
 
     if (job.reply_channel === 'telegram') {
-      await sendTelegramMessage(
-        { channel: 'telegram', chatId: job.reply_chat_id, text: result.text },
-        env.TELEGRAM_BOT_TOKEN,
-      );
+      const botToken = await resolveBotToken(env);
+      if (botToken) {
+        await sendTelegramMessage(
+          { channel: 'telegram', chatId: job.reply_chat_id, text: result.text },
+          botToken,
+        );
+      }
     }
   } catch (e) {
     log('error', 'Cron job failed', { jobId: job.id, name: job.name, error: String(e) });

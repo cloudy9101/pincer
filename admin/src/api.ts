@@ -5,6 +5,7 @@ import type {
   MCPServer, OAuthConnection, CatalogSkill,
   WebhookInfoResponse, TelegramSetupResponse,
   SetupCheckResponse, ConnectorEntry,
+  OnboardingStatus, BotTokenResponse, TelegramLoginData, TelegramLoginResponse,
 } from './types';
 
 function authHeaders(): Record<string, string> {
@@ -96,3 +97,14 @@ export const setupTelegramChannel = () => request<TelegramSetupResponse>('POST',
 export const listCatalog = () => request<CatalogSkill[]>('GET', '/admin/skills/catalog');
 export const installCatalogSkill = (name: string, secrets?: Record<string, string>) =>
   request<{ ok: boolean; name: string }>('POST', `/admin/skills/catalog/${name}/install`, { secrets: secrets ?? {} });
+
+// Onboarding
+export const getOnboardingStatus = () => request<OnboardingStatus>('GET', '/admin/onboarding/status');
+export const submitOwnerUsername = (username: string) =>
+  request<{ ok: boolean }>('POST', '/admin/onboarding/username', { username });
+export const submitBotToken = (token: string) =>
+  request<BotTokenResponse>('POST', '/admin/onboarding/bot-token', { token });
+export const submitTelegramLogin = (data: TelegramLoginData) =>
+  request<TelegramLoginResponse>('POST', '/admin/onboarding/telegram-login', data);
+export const sendWelcomeMessage = () =>
+  request<{ ok: boolean }>('POST', '/admin/onboarding/welcome');

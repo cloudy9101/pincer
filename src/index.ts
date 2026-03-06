@@ -27,17 +27,29 @@ import { revokeConnection } from './oauth/tokens.ts';
 import { runCronJobs } from './cron/runner.ts';
 import { encrypt, decrypt } from './security/encryption.ts';
 import { listProviders } from './oauth/providers.ts';
+import { resolveBotToken, ensureEncryptionKey, storeBotToken, createAdminSession, isBootstrapMode } from './security/bootstrap.ts';
+import { verifyTelegramLogin } from './security/telegram-login.ts';
+import type { TelegramLoginData } from './security/telegram-login.ts';
 
 export { ConversationSqlDO } from './durables/conversation.ts';
 
 export default {
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (!env.ENCRYPTION_KEY) {
+      (env as unknown as Record<string, unknown>).ENCRYPTION_KEY = await ensureEncryptionKey(env);
+    }
     ctx.waitUntil(runCronJobs(env, controller.scheduledTime));
   },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
     const traceId = crypto.randomUUID();
+
+    // Ensure encryption key is available — auto-generates on first request if not set via env var.
+    // Injected into env so all downstream code can use env.ENCRYPTION_KEY directly.
+    if (!env.ENCRYPTION_KEY) {
+      (env as unknown as Record<string, unknown>).ENCRYPTION_KEY = await ensureEncryptionKey(env);
+    }
 
     try {
       // Webhook routes
@@ -60,7 +72,7 @@ export default {
 
       // Admin routes
       if (path.startsWith('/admin/')) {
-        if (!verifyAdminAuth(request, env.ADMIN_AUTH_TOKEN)) {
+        if (!await verifyAdminAuth(request, env)) {
           return new Response('Unauthorized', { status: 401 });
         }
         try {
@@ -98,6 +110,12 @@ export default {
 
 async function handleTelegramWebhook(request: Request, env: Env, ctx: ExecutionContext, traceId: string): Promise<Response> {
   try {
+    const botToken = await resolveBotToken(env);
+    if (!botToken) {
+      log('error', 'Bot token not configured', {}, { traceId, handler: 'telegram' });
+      return new Response('Bot not configured', { status: 500 });
+    }
+
     // Resolve webhook secret: D1 config first, then env var fallback
     const webhookSecret = await getConfigValue(env.DB, env.CACHE, 'telegram_webhook_secret') ?? env.TELEGRAM_WEBHOOK_SECRET ?? '';
     if (!webhookSecret || !await verifyTelegramWebhook(request, webhookSecret)) {
@@ -111,9 +129,9 @@ async function handleTelegramWebhook(request: Request, env: Env, ctx: ExecutionC
     }
 
     // Register bot commands lazily (single KV read; no-op after first success)
-    ctx.waitUntil(ensureCommandsRegistered(env.CACHE, env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_API_BASE));
+    ctx.waitUntil(ensureCommandsRegistered(env.CACHE, botToken, env.TELEGRAM_API_BASE));
     // Handle in background so we can return 200 immediately
-    ctx.waitUntil(processTelegramMessage(msg, env, traceId));
+    ctx.waitUntil(processTelegramMessage(msg, env, botToken, traceId));
     return new Response('OK');
   } catch (error) {
     log('error', 'Telegram webhook error', { error: String(error) }, { traceId, handler: 'telegram' });
@@ -121,7 +139,7 @@ async function handleTelegramWebhook(request: Request, env: Env, ctx: ExecutionC
   }
 }
 
-async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: string): Promise<void> {
+async function processTelegramMessage(msg: IncomingMessage, env: Env, botToken: string, traceId: string): Promise<void> {
   try {
     // Commands skip allowlist/rate-limit checks
     const isCommand = msg.text.startsWith('/');
@@ -148,7 +166,7 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
             text: `You're not on the allowlist. Your pairing code is: ${code}\nAsk the owner to approve it.`,
             replyToMessageId: msg.channelMessageId,
           },
-          env.TELEGRAM_BOT_TOKEN,
+          botToken,
           env.TELEGRAM_API_BASE,
         );
         return;
@@ -169,14 +187,14 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
             text: 'You are being rate limited. Please wait a moment.',
             replyToMessageId: msg.channelMessageId,
           },
-          env.TELEGRAM_BOT_TOKEN,
+          botToken,
           env.TELEGRAM_API_BASE,
         );
         return;
       }
 
       // Send typing indicator
-      await sendTelegramChatAction(msg.chatId, 'typing', env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_API_BASE);
+      await sendTelegramChatAction(msg.chatId, 'typing', botToken, env.TELEGRAM_API_BASE);
     }
 
     // Resolve route
@@ -204,14 +222,14 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
     if (msg.mediaAttachments && msg.mediaAttachments.length > 0) {
       for (const attachment of msg.mediaAttachments) {
         if (attachment.type === 'image') {
-          const file = await downloadTelegramFile(attachment.fileId, env.TELEGRAM_BOT_TOKEN, attachment.mimeType);
+          const file = await downloadTelegramFile(attachment.fileId, botToken, attachment.mimeType);
           if (file) {
             const base64 = arrayBufferToBase64(file.data);
             images.push({ data: base64, mimeType: file.mimeType });
           }
         } else if (attachment.type === 'audio') {
           // Transcribe audio using Workers AI Whisper
-          const file = await downloadTelegramFile(attachment.fileId, env.TELEGRAM_BOT_TOKEN, attachment.mimeType);
+          const file = await downloadTelegramFile(attachment.fileId, botToken, attachment.mimeType);
           if (file) {
             try {
               const audioBytes = new Uint8Array(file.data);
@@ -263,7 +281,7 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
           chatId: msg.chatId,
           text: 'An error occurred. Please try again.',
         },
-        env.TELEGRAM_BOT_TOKEN,
+        botToken,
         env.TELEGRAM_API_BASE,
       );
     } catch {
@@ -302,6 +320,7 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
       sessions: sessionCount?.cnt,
       allowlistEntries: allowlistCount?.cnt,
       setupCompleted: setupCompleted === 'true',
+      bootstrapMode: isBootstrapMode(env),
     });
   }
 
@@ -763,13 +782,17 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
 
   // Telegram webhook info — check if webhook is registered
   if (path === '/admin/telegram/webhook' && request.method === 'GET') {
-    const info = await getTelegramWebhookInfo(env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_API_BASE);
+    const botToken = await resolveBotToken(env);
+    if (!botToken) return json({ ok: false, error: 'Bot token not configured' }, 400);
+    const info = await getTelegramWebhookInfo(botToken, env.TELEGRAM_API_BASE);
     return json(info);
   }
 
   // Telegram setup — register webhook + bot commands in one call
   // Auto-generates webhook secret if not already stored in D1 config
   if (path === '/admin/telegram/setup' && request.method === 'POST') {
+    const botToken = await resolveBotToken(env);
+    if (!botToken) return json({ error: 'Bot token not configured' }, 400);
     const origin = new URL(request.url).origin;
     // Resolve or generate webhook secret
     let webhookSecret = await getConfigValue(env.DB, env.CACHE, 'telegram_webhook_secret') ?? env.TELEGRAM_WEBHOOK_SECRET;
@@ -779,7 +802,7 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
       crypto.getRandomValues(bytes);
       webhookSecret = [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
     }
-    const result = await setupTelegram(origin, env.TELEGRAM_BOT_TOKEN, webhookSecret, env.TELEGRAM_API_BASE);
+    const result = await setupTelegram(origin, botToken, webhookSecret, env.TELEGRAM_API_BASE);
     // Persist webhook secret in D1 on successful registration
     if (result.webhook.ok) {
       await setConfigValue(env.DB, env.CACHE, 'telegram_webhook_secret', webhookSecret);
@@ -789,12 +812,136 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
 
   // Telegram command registration only
   if (path === '/admin/telegram/commands' && request.method === 'POST') {
-    const result = await registerTelegramCommands(env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_API_BASE);
+    const botToken = await resolveBotToken(env);
+    if (!botToken) return json({ error: 'Bot token not configured' }, 400);
+    const result = await registerTelegramCommands(botToken, env.TELEGRAM_API_BASE);
     return json(result);
+  }
+
+  // ─── Onboarding ────────────────────────────────────────────
+
+  // Onboarding status — returns current state for the setup wizard
+  if (path === '/admin/onboarding/status' && request.method === 'GET') {
+    const botToken = await resolveBotToken(env);
+    const [storedBotUsername, storedOwnerId, setupCompleted, ownerUsername, telegramLoginDone] = await Promise.all([
+      getConfigValue(env.DB, env.CACHE, 'telegram_bot_username'),
+      getConfigValue(env.DB, env.CACHE, 'telegram_owner_id'),
+      getConfigValue(env.DB, env.CACHE, 'setup_completed'),
+      getConfigValue(env.DB, env.CACHE, 'telegram_owner_username'),
+      getConfigValue(env.DB, env.CACHE, 'telegram_login_done'),
+    ]);
+    const agents = await env.DB.prepare('SELECT COUNT(*) as cnt FROM agents').first();
+
+    return json({
+      ownerUsername: ownerUsername ?? env.TELEGRAM_OWNER_USERNAME ?? '',
+      hasBotToken: !!botToken,
+      botUsername: storedBotUsername ?? '',
+      workerDomain: new URL(request.url).hostname,
+      telegramLoginDone: telegramLoginDone === 'true',
+      hasAgent: (agents?.cnt as number) > 0,
+      setupCompleted: setupCompleted === 'true',
+    });
+  }
+
+  // Onboarding: save owner username (if not set via env var)
+  if (path === '/admin/onboarding/username' && request.method === 'POST') {
+    const { username } = await request.json() as { username: string };
+    if (!username?.trim()) return json({ error: 'Username is required' }, 400);
+    await setConfigValue(env.DB, env.CACHE, 'telegram_owner_username', username.trim().replace(/^@/, ''));
+    return json({ ok: true });
+  }
+
+  // Onboarding: validate & store bot token
+  if (path === '/admin/onboarding/bot-token' && request.method === 'POST') {
+    const { token } = await request.json() as { token: string };
+    if (!token?.trim()) return json({ error: 'Token is required' }, 400);
+
+    // Validate via Telegram getMe
+    const apiBase = (env.TELEGRAM_API_BASE ?? 'https://api.telegram.org') + '/bot';
+    const meResp = await fetch(`${apiBase}${token.trim()}/getMe`);
+    if (!meResp.ok) return json({ error: 'Invalid bot token — getMe failed' }, 400);
+    const meData = (await meResp.json()) as { ok: boolean; result?: { id: number; username: string; first_name: string } };
+    if (!meData.ok || !meData.result) return json({ error: 'Invalid bot token' }, 400);
+
+    // Store plaintext in KV for fast runtime access
+    await storeBotToken(env.CACHE, token.trim());
+
+    // Store encrypted in D1 for durability
+    const encKey = await ensureEncryptionKey(env);
+    const encryptedToken = await encrypt(token.trim(), encKey);
+    const b64 = btoa(String.fromCharCode(...encryptedToken));
+    await setConfigValue(env.DB, env.CACHE, 'telegram_bot_token_enc', b64);
+
+    // Store bot metadata
+    await setConfigValue(env.DB, env.CACHE, 'telegram_bot_username', meData.result.username);
+    await setConfigValue(env.DB, env.CACHE, 'telegram_bot_id', String(meData.result.id));
+
+    return json({ ok: true, botUsername: meData.result.username, botId: meData.result.id });
+  }
+
+  // Onboarding: verify Telegram Login and create session
+  if (path === '/admin/onboarding/telegram-login' && request.method === 'POST') {
+    const loginData = await request.json() as TelegramLoginData;
+
+    const botToken = await resolveBotToken(env);
+    if (!botToken) return json({ error: 'Bot token not configured yet' }, 400);
+
+    // Verify HMAC signature
+    const valid = await verifyTelegramLogin(loginData, botToken);
+    if (!valid) return json({ error: 'Invalid Telegram login data' }, 401);
+
+    // Resolve expected owner username
+    const expectedUsername = (
+      await getConfigValue(env.DB, env.CACHE, 'telegram_owner_username')
+      ?? env.TELEGRAM_OWNER_USERNAME
+      ?? ''
+    ).toLowerCase();
+
+    const loginUsername = (loginData.username ?? '').toLowerCase();
+    if (!expectedUsername || loginUsername !== expectedUsername) {
+      return json({ error: `Username mismatch. Expected @${expectedUsername}, got @${loginUsername}` }, 403);
+    }
+
+    // Create admin session
+    const sessionToken = await createAdminSession(env.CACHE, {
+      telegramId: loginData.id,
+      username: loginData.username,
+    });
+
+    // Store owner ID and mark login as done
+    await setConfigValue(env.DB, env.CACHE, 'telegram_owner_id', String(loginData.id));
+    await setConfigValue(env.DB, env.CACHE, 'telegram_login_done', 'true');
+
+    // Auto-add owner to allowlist
+    await addToAllowlist(env.DB, 'telegram', String(loginData.id), loginData.first_name);
+
+    return json({ ok: true, sessionToken, username: loginData.username });
+  }
+
+  // Onboarding: send welcome message to the owner
+  if (path === '/admin/onboarding/welcome' && request.method === 'POST') {
+    const botToken = await resolveBotToken(env);
+    if (!botToken) return json({ error: 'Bot token not configured' }, 400);
+
+    const ownerId = await getConfigValue(env.DB, env.CACHE, 'telegram_owner_id');
+    if (!ownerId) return json({ error: 'Owner ID not set — complete Telegram Login first' }, 400);
+
+    await sendTelegramMessage(
+      {
+        channel: 'telegram',
+        chatId: ownerId,
+        text: 'Welcome to Pincer! Your bot is set up and ready to go. Send /help to see available commands.',
+      },
+      botToken,
+      env.TELEGRAM_API_BASE,
+    );
+
+    return json({ ok: true });
   }
 
   // Setup check — verify which required env vars are present and which connectors are configured
   if (path === '/admin/setup/check' && request.method === 'GET') {
+    const botToken = await resolveBotToken(env);
     const { results: connectorRows } = await env.DB.prepare('SELECT provider FROM oauth_provider_config').all();
     const configuredProviders = connectorRows.map(r => r.provider as string);
 
@@ -806,8 +953,8 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     return json({
       secrets: {
         ADMIN_AUTH_TOKEN: !!env.ADMIN_AUTH_TOKEN,
-        ENCRYPTION_KEY: !!env.ENCRYPTION_KEY,
-        TELEGRAM_BOT_TOKEN: !!env.TELEGRAM_BOT_TOKEN,
+        ENCRYPTION_KEY: !!(env.ENCRYPTION_KEY || await env.CACHE.get('__encryption_key')),
+        TELEGRAM_BOT_TOKEN: !!botToken,
       },
       telegram: {
         webhookSecretConfigured: !!(storedWebhookSecret ?? env.TELEGRAM_WEBHOOK_SECRET),
@@ -835,7 +982,8 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     const { client_id, client_secret } = await request.json() as { client_id: string; client_secret: string };
     if (!client_id || !client_secret) return json({ error: 'client_id and client_secret required' }, 400);
 
-    const encryptedSecret = await encrypt(client_secret, env.ENCRYPTION_KEY);
+    const encKey = await ensureEncryptionKey(env);
+    const encryptedSecret = await encrypt(client_secret, encKey);
     await env.DB.prepare(
       `INSERT INTO oauth_provider_config (provider, client_id, encrypted_client_secret)
        VALUES (?, ?, ?)
