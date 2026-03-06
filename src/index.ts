@@ -899,8 +899,11 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
 
     const loginUsername = (loginData.username ?? '').toLowerCase();
 
-    // If an expected username is configured, enforce it
-    if (expectedUsername && loginUsername !== expectedUsername) {
+    // Owner username must be configured before login is allowed
+    if (!expectedUsername) {
+      return json({ error: 'Owner username not configured — complete the username step first' }, 400);
+    }
+    if (loginUsername !== expectedUsername) {
       return json({ error: `Username mismatch. Expected @${expectedUsername}, got @${loginUsername}` }, 403);
     }
 
