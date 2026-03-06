@@ -170,7 +170,7 @@ test.describe('Admin SPA — setup onboarding', () => {
     // New onboarding wizard — shows one step at a time
     await expect(page.getByRole('heading', { name: /setup your bot/i })).toBeVisible();
     // First step is username entry (no TELEGRAM_OWNER_USERNAME in test env)
-    await expect(page.getByText(/Telegram Username/i)).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Telegram Username/i })).toBeVisible();
     await expect(page.getByRole('button', { name: /continue/i })).toBeVisible();
   });
 
