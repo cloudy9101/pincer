@@ -21,7 +21,7 @@ function stepIndex(step: Step): number {
 export default function Setup() {
   const navigate = useNavigate();
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
-  const [currentStep, setCurrentStep] = useState<Step>('username');
+  const [currentStep, setCurrentStep] = useState<Step>('create-bot');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
 
@@ -53,6 +53,7 @@ export default function Setup() {
         return;
       }
       if (!s.ownerUsername) {
+        // Username not set at deploy time — ask for it
         setCurrentStep('username');
       } else if (!s.hasBotToken) {
         setCurrentStep('create-bot');
@@ -184,7 +185,7 @@ export default function Setup() {
 
       <div className="space-y-4">
 
-        {/* Step 1: Username */}
+        {/* Step 0: Username (only shown if not set via env var) */}
         {currentStep === 'username' && (
           <Card>
             <div className="space-y-3">
@@ -193,7 +194,7 @@ export default function Setup() {
                 <h3 className="text-sm font-semibold text-gray-900">Your Telegram Username</h3>
               </div>
               <p className="text-xs text-gray-500">
-                Enter your Telegram username so we can verify your identity later.
+                Enter your Telegram username so we can verify your identity when you log in.
               </p>
               <div className="flex gap-2">
                 <input
@@ -217,7 +218,7 @@ export default function Setup() {
           </Card>
         )}
 
-        {/* Step 2: Create Bot */}
+        {/* Step 1: Create Bot */}
         {currentStep === 'create-bot' && (
           <Card>
             <div className="space-y-3">
@@ -249,12 +250,12 @@ export default function Setup() {
           </Card>
         )}
 
-        {/* Step 3: Enter Bot Token */}
+        {/* Step 2: Enter Bot Token */}
         {currentStep === 'bot-token' && (
           <Card>
             <div className="space-y-3">
               <div className="flex items-center gap-2">
-                <StepBadge n={3} />
+                <StepBadge n={2} />
                 <h3 className="text-sm font-semibold text-gray-900">Enter Bot Token</h3>
               </div>
               <p className="text-xs text-gray-500">
@@ -288,12 +289,12 @@ export default function Setup() {
           </Card>
         )}
 
-        {/* Step 4: Set Domain */}
+        {/* Step 3: Set Domain */}
         {currentStep === 'set-domain' && (
           <Card>
             <div className="space-y-3">
               <div className="flex items-center gap-2">
-                <StepBadge n={4} />
+                <StepBadge n={3} />
                 <h3 className="text-sm font-semibold text-gray-900">Set Bot Domain</h3>
               </div>
               <div className="text-xs text-gray-600 space-y-2">
@@ -348,16 +349,19 @@ export default function Setup() {
           </Card>
         )}
 
-        {/* Step 5: Telegram Login */}
+        {/* Step 4: Telegram Login */}
         {currentStep === 'telegram-login' && (
           <Card>
             <div className="space-y-3">
               <div className="flex items-center gap-2">
-                <StepBadge n={5} />
+                <StepBadge n={4} />
                 <h3 className="text-sm font-semibold text-gray-900">Login with Telegram</h3>
               </div>
               <p className="text-xs text-gray-500">
-                Click the button below to verify your identity. Make sure you log in as <strong>@{status?.ownerUsername}</strong>.
+                Click the button below to verify your identity.
+                {status?.ownerUsername && (
+                  <> Make sure you log in as <strong>@{status.ownerUsername}</strong>.</>
+                )}
               </p>
               {loginError && (
                 <p className="text-xs text-red-600">{loginError}</p>
@@ -385,12 +389,12 @@ export default function Setup() {
           </Card>
         )}
 
-        {/* Step 6: Create Agent */}
+        {/* Step 5: Create Agent */}
         {currentStep === 'agent' && (
           <Card>
             <div className="space-y-3">
               <div className="flex items-center gap-2">
-                <StepBadge n={6} />
+                <StepBadge n={5} />
                 <h3 className="text-sm font-semibold text-gray-900">Create an Agent</h3>
               </div>
               <p className="text-xs text-gray-500">
@@ -417,7 +421,7 @@ export default function Setup() {
           </Card>
         )}
 
-        {/* Step 7: Finish */}
+        {/* Step 6: Finish */}
         {currentStep === 'finish' && (
           <Card>
             <div className="space-y-3">

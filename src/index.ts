@@ -890,7 +890,7 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     const valid = await verifyTelegramLogin(loginData, botToken);
     if (!valid) return json({ error: 'Invalid Telegram login data' }, 401);
 
-    // Resolve expected owner username
+    // Resolve expected owner username (if set via env var or D1 config)
     const expectedUsername = (
       await getConfigValue(env.DB, env.CACHE, 'telegram_owner_username')
       ?? env.TELEGRAM_OWNER_USERNAME
@@ -898,7 +898,9 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     ).toLowerCase();
 
     const loginUsername = (loginData.username ?? '').toLowerCase();
-    if (!expectedUsername || loginUsername !== expectedUsername) {
+
+    // If an expected username is configured, enforce it
+    if (expectedUsername && loginUsername !== expectedUsername) {
       return json({ error: `Username mismatch. Expected @${expectedUsername}, got @${loginUsername}` }, 403);
     }
 
