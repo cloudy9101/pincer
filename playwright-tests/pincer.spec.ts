@@ -162,16 +162,16 @@ test.describe('Admin SPA — setup onboarding', () => {
     await expect(page.getByRole('heading', { name: /setup/i })).toBeVisible();
   });
 
-  test('setup page shows onboarding steps including secrets and connectors', async ({ page }) => {
+  test('setup page shows onboarding wizard', async ({ page }) => {
     await page.goto(`${BASE_URL}/dashboard/`);
     await page.evaluate((token) => localStorage.setItem('pincer_admin_token', token), ADMIN_TOKEN);
     await page.goto(`${BASE_URL}/dashboard/setup`);
 
-    await expect(page.getByText(/Required Secrets/i)).toBeVisible();
-    await expect(page.getByText(/Connect Telegram/i)).toBeVisible();
-    await expect(page.getByText(/OAuth Connectors/i)).toBeVisible();
-    await expect(page.getByText(/Create an Agent/i)).toBeVisible();
-    await expect(page.getByText(/Add Users/i)).toBeVisible();
+    // New onboarding wizard — shows one step at a time
+    await expect(page.getByRole('heading', { name: /setup your bot/i })).toBeVisible();
+    // First step is username entry (no TELEGRAM_OWNER_USERNAME in test env)
+    await expect(page.getByText(/Telegram Username/i)).toBeVisible();
+    await expect(page.getByRole('button', { name: /continue/i })).toBeVisible();
   });
 
   test('completing setup allows access to dashboard', async ({ page }) => {

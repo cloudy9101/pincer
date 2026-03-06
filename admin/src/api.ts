@@ -8,24 +8,27 @@ import type {
   OnboardingStatus, BotTokenResponse, TelegramLoginData, TelegramLoginResponse,
 } from './types';
 
-function authHeaders(): Record<string, string> {
-  const token = getToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  // Capture token at request time so we can check it against the current
+  // token when the response arrives.  This avoids a race where a 401
+  // response from an unauthenticated request clears a token that was
+  // injected between fetch() and the response.
+  const sentToken = getToken();
   const res = await fetch(path, {
     method,
     headers: {
-      ...authHeaders(),
+      ...(sentToken ? { Authorization: `Bearer ${sentToken}` } : {}),
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
 
   if (res.status === 401) {
-    clearToken();
-    // window.location.href = '/dashboard/login';
+    // Only clear if we actually sent a token and it's still the current one.
+    if (sentToken && getToken() === sentToken) {
+      clearToken();
+    }
     throw new Error('Unauthorized');
   }
 
