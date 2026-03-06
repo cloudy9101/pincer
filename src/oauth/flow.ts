@@ -2,6 +2,7 @@ import type { Env } from '../env.ts';
 import type { OAuthTokens } from './types.ts';
 import { getProvider } from './providers.ts';
 import { encryptTokens } from './tokens.ts';
+import { getClientCredentials } from './credentials.ts';
 
 const STATE_EXPIRY_SECONDS = 600; // 10 minutes
 
@@ -19,8 +20,8 @@ export async function startOAuthFlow(
   const providerConfig = getProvider(provider);
   if (!providerConfig) throw new Error(`Unknown OAuth provider: ${provider}`);
 
-  const clientId = (env as unknown as Record<string, unknown>)[providerConfig.clientIdKey] as string | undefined;
-  if (!clientId) throw new Error(`OAuth not configured: missing ${providerConfig.clientIdKey}`);
+  const creds = await getClientCredentials(env, provider, providerConfig.clientIdKey, providerConfig.clientSecretKey);
+  if (!creds) throw new Error(`OAuth not configured: missing credentials for ${provider}`);
 
   const state = crypto.randomUUID();
   const sessionToken = crypto.randomUUID();
@@ -67,8 +68,8 @@ export async function handleConnect(request: Request, env: Env): Promise<Respons
     return new Response('Invalid or expired state. Please request a new connect link.', { status: 400 });
   }
 
-  const clientId = (env as unknown as Record<string, unknown>)[providerConfig.clientIdKey] as string | undefined;
-  if (!clientId) {
+  const creds = await getClientCredentials(env, provider, providerConfig.clientIdKey, providerConfig.clientSecretKey);
+  if (!creds) {
     return new Response('OAuth not configured for this provider', { status: 500 });
   }
 
@@ -77,7 +78,7 @@ export async function handleConnect(request: Request, env: Env): Promise<Respons
 
   // Build provider auth URL
   const authUrl = new URL(providerConfig.authUrl);
-  authUrl.searchParams.set('client_id', clientId);
+  authUrl.searchParams.set('client_id', creds.clientId);
   authUrl.searchParams.set('redirect_uri', callbackUrl);
   authUrl.searchParams.set('response_type', 'code');
   authUrl.searchParams.set('state', state);
@@ -130,10 +131,9 @@ export async function handleCallback(request: Request, env: Env): Promise<Respon
   await env.DB.prepare('DELETE FROM oauth_state WHERE state = ?').bind(state).run();
 
   const userId = row.user_id as string;
-  const clientId = (env as unknown as Record<string, unknown>)[providerConfig.clientIdKey] as string | undefined;
-  const clientSecret = (env as unknown as Record<string, unknown>)[providerConfig.clientSecretKey] as string | undefined;
+  const creds = await getClientCredentials(env, provider, providerConfig.clientIdKey, providerConfig.clientSecretKey);
 
-  if (!clientId || !clientSecret) {
+  if (!creds) {
     return htmlResponse('Error', 'OAuth not configured for this provider.');
   }
 
@@ -147,8 +147,8 @@ export async function handleCallback(request: Request, env: Env): Promise<Respon
         grant_type: 'authorization_code',
         code,
         redirect_uri: callbackUrl,
-        client_id: clientId,
-        client_secret: clientSecret,
+        client_id: creds.clientId,
+        client_secret: creds.clientSecret,
       }),
     });
 

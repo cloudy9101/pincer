@@ -162,14 +162,16 @@ test.describe('Admin SPA — setup onboarding', () => {
     await expect(page.getByRole('heading', { name: /setup/i })).toBeVisible();
   });
 
-  test('setup page shows onboarding steps', async ({ page }) => {
+  test('setup page shows onboarding wizard', async ({ page }) => {
     await page.goto(`${BASE_URL}/dashboard/`);
     await page.evaluate((token) => localStorage.setItem('pincer_admin_token', token), ADMIN_TOKEN);
     await page.goto(`${BASE_URL}/dashboard/setup`);
 
-    await expect(page.getByText(/Connect Telegram/i)).toBeVisible();
-    await expect(page.getByText(/Create an Agent/i)).toBeVisible();
-    await expect(page.getByText(/Add Users/i)).toBeVisible();
+    // New onboarding wizard — shows one step at a time
+    await expect(page.getByRole('heading', { name: /setup your bot/i })).toBeVisible();
+    // First step is username entry (no TELEGRAM_OWNER_USERNAME in test env)
+    await expect(page.getByRole('heading', { name: /Telegram Username/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /continue/i })).toBeVisible();
   });
 
   test('completing setup allows access to dashboard', async ({ page }) => {
@@ -360,6 +362,44 @@ test.describe('Admin API', () => {
     expect(body).toHaveProperty('ok');
     expect(body).toHaveProperty('result');
     expect(body.result).toHaveProperty('url');
+  });
+
+  test('GET /admin/setup/check returns secrets, telegram, and connectors info', async ({ page }) => {
+    const res = await page.request.get(`${BASE_URL}/admin/setup/check`, { headers: authHeaders });
+    expect(res.ok()).toBe(true);
+    const body = await res.json();
+    expect(body).toHaveProperty('secrets');
+    expect(body).toHaveProperty('telegram');
+    expect(body).toHaveProperty('connectors');
+    expect(typeof body.secrets).toBe('object');
+    expect(typeof body.telegram.webhookSecretConfigured).toBe('boolean');
+    expect(Array.isArray(body.connectors)).toBe(true);
+    // TELEGRAM_WEBHOOK_SECRET should no longer be in secrets (now auto-generated)
+    expect(body.secrets).not.toHaveProperty('TELEGRAM_WEBHOOK_SECRET');
+  });
+
+  test('PUT /admin/connectors/:provider saves and DELETE removes a connector', async ({ page }) => {
+    // Save a connector
+    const saveRes = await page.request.put(`${BASE_URL}/admin/connectors/google`, {
+      data: { client_id: 'test-client-id', client_secret: 'test-client-secret' },
+      headers: authHeaders,
+    });
+    expect(saveRes.ok()).toBe(true);
+
+    // Verify it appears in list
+    const listRes = await page.request.get(`${BASE_URL}/admin/connectors`, { headers: authHeaders });
+    expect(listRes.ok()).toBe(true);
+    const connectors = await listRes.json();
+    expect(connectors.some((c: { provider: string }) => c.provider === 'google')).toBe(true);
+
+    // Delete it
+    const delRes = await page.request.delete(`${BASE_URL}/admin/connectors/google`, { headers: authHeaders });
+    expect(delRes.ok()).toBe(true);
+
+    // Verify it's gone
+    const listRes2 = await page.request.get(`${BASE_URL}/admin/connectors`, { headers: authHeaders });
+    const connectors2 = await listRes2.json();
+    expect(connectors2.some((c: { provider: string }) => c.provider === 'google')).toBe(false);
   });
 
   test('POST /admin/telegram/setup registers webhook and commands', async ({ page }) => {

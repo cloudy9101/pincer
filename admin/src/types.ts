@@ -54,6 +54,41 @@ export interface StatusResponse {
   sessions: number;
   allowlistEntries: number;
   setupCompleted: boolean;
+  bootstrapMode: boolean;
+}
+
+export interface OnboardingStatus {
+  ownerUsername: string;
+  hasBotToken: boolean;
+  botUsername: string;
+  workerDomain: string;
+  telegramLoginDone: boolean;
+  hasAgent: boolean;
+  setupCompleted: boolean;
+}
+
+export interface BotTokenResponse {
+  ok: boolean;
+  botUsername?: string;
+  botId?: number;
+  error?: string;
+}
+
+export interface TelegramLoginData {
+  id: number;
+  first_name: string;
+  last_name?: string;
+  username?: string;
+  photo_url?: string;
+  auth_date: number;
+  hash: string;
+}
+
+export interface TelegramLoginResponse {
+  ok: boolean;
+  sessionToken?: string;
+  username?: string;
+  error?: string;
 }
 
 export interface UsageRow {
@@ -90,6 +125,22 @@ export interface CatalogSecretField {
   key: string;
   label: string;
   placeholder: string;
+}
+
+export interface SetupCheckResponse {
+  secrets: Record<string, boolean>;
+  telegram: {
+    webhookSecretConfigured: boolean;
+    ownerId: string;
+  };
+  connectors: { id: string; configured: boolean }[];
+}
+
+export interface ConnectorEntry {
+  provider: string;
+  client_id: string;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface WebhookInfo {

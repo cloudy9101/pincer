@@ -13,6 +13,7 @@ import { loadActiveSkills } from '../skills/loader.ts';
 import { formatSkillsPrompt } from '../skills/prompt.ts';
 import { sendTelegramMessage, sendTelegramMessageAndGetId, sendTelegramChatAction, editTelegramMessage } from '../channels/telegram/send.ts';
 import { BOT_COMMANDS } from '../channels/telegram/commands.ts';
+import { resolveBotToken } from '../security/bootstrap.ts';
 import { getAgent } from '../config/loader.ts';
 import { getCanonicalId } from '../routing/identity-links.ts';
 import { isAllowed } from '../security/allowlist.ts';
@@ -109,6 +110,16 @@ export class ConversationSqlDO extends DurableObject<Env> {
   private sql = this.ctx.storage.sql;
   private history: ModelMessage[] = [];
   private state_: SessionState | null = null;
+  private cachedBotToken: string | null = null;
+
+  /** Resolve bot token from env var or KV (cached for the DO lifetime). */
+  private async getBotToken(): Promise<string> {
+    if (this.cachedBotToken) return this.cachedBotToken;
+    const token = await resolveBotToken(this.env);
+    if (!token) throw new Error('Bot token not configured');
+    this.cachedBotToken = token;
+    return token;
+  }
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -375,7 +386,7 @@ export class ConversationSqlDO extends DurableObject<Env> {
       : '';
 
     // Start typing indicator for Telegram
-    const typingInterval = this.startTypingIndicator(replyTo);
+    const typingInterval = await this.startTypingIndicator(replyTo);
 
     try {
       const toolCtx: ToolCallContext = {
@@ -738,16 +749,18 @@ export class ConversationSqlDO extends DurableObject<Env> {
     }
   }
 
-  private startTypingIndicator(dest: ReplyDestination): ReturnType<typeof setInterval> | null {
+  private async startTypingIndicator(dest: ReplyDestination): Promise<ReturnType<typeof setInterval> | null> {
     if (dest.channel !== 'telegram') return null;
-    const send = () => sendTelegramChatAction(dest.chatId, 'typing', this.env.TELEGRAM_BOT_TOKEN, this.env.TELEGRAM_API_BASE).catch(() => {});
+    const botToken = await this.getBotToken();
+    const send = () => sendTelegramChatAction(dest.chatId, 'typing', botToken, this.env.TELEGRAM_API_BASE).catch(() => {});
     send();
     return setInterval(send, 4_000);
   }
 
   private async sendReply(dest: ReplyDestination, text: string): Promise<void> {
     switch (dest.channel) {
-      case 'telegram':
+      case 'telegram': {
+        const botToken = await this.getBotToken();
         await sendTelegramMessage(
           {
             channel: 'telegram',
@@ -755,10 +768,11 @@ export class ConversationSqlDO extends DurableObject<Env> {
             text,
             replyToMessageId: dest.chatType === 'group' ? dest.channelMessageId : undefined,
           },
-          this.env.TELEGRAM_BOT_TOKEN,
+          botToken,
           this.env.TELEGRAM_API_BASE,
         );
         break;
+      }
       default:
         console.error(`Unknown reply channel: ${dest.channel}`);
     }
@@ -767,7 +781,8 @@ export class ConversationSqlDO extends DurableObject<Env> {
   /** Send the first partial message and return an ID for subsequent edits. */
   private async sendInitialPartial(dest: ReplyDestination, text: string): Promise<string | undefined> {
     switch (dest.channel) {
-      case 'telegram':
+      case 'telegram': {
+        const botToken = await this.getBotToken();
         return sendTelegramMessageAndGetId(
           {
             channel: 'telegram',
@@ -775,9 +790,10 @@ export class ConversationSqlDO extends DurableObject<Env> {
             text,
             replyToMessageId: dest.chatType === 'group' ? dest.channelMessageId : undefined,
           },
-          this.env.TELEGRAM_BOT_TOKEN,
+          botToken,
           this.env.TELEGRAM_API_BASE,
         );
+      }
       default:
         return undefined;
     }
@@ -787,7 +803,7 @@ export class ConversationSqlDO extends DurableObject<Env> {
   private async editPartialReply(dest: ReplyDestination, text: string, messageId: string): Promise<void> {
     switch (dest.channel) {
       case 'telegram':
-        await editTelegramMessage(dest.chatId, messageId, text, this.env.TELEGRAM_BOT_TOKEN, this.env.TELEGRAM_API_BASE);
+        await editTelegramMessage(dest.chatId, messageId, text, await this.getBotToken(), this.env.TELEGRAM_API_BASE);
         break;
     }
   }

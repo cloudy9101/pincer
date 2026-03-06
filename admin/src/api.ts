@@ -4,26 +4,31 @@ import type {
   AllowlistEntry, ConfigEntry, StatusResponse, UsageResponse,
   MCPServer, OAuthConnection, CatalogSkill,
   WebhookInfoResponse, TelegramSetupResponse,
+  SetupCheckResponse, ConnectorEntry,
+  OnboardingStatus, BotTokenResponse, TelegramLoginData, TelegramLoginResponse,
 } from './types';
 
-function authHeaders(): Record<string, string> {
-  const token = getToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  // Capture token at request time so we can check it against the current
+  // token when the response arrives.  This avoids a race where a 401
+  // response from an unauthenticated request clears a token that was
+  // injected between fetch() and the response.
+  const sentToken = getToken();
   const res = await fetch(path, {
     method,
     headers: {
-      ...authHeaders(),
+      ...(sentToken ? { Authorization: `Bearer ${sentToken}` } : {}),
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
 
   if (res.status === 401) {
-    clearToken();
-    // window.location.href = '/dashboard/login';
+    // Only clear if we actually sent a token and it's still the current one.
+    if (sentToken && getToken() === sentToken) {
+      clearToken();
+    }
     throw new Error('Unauthorized');
   }
 
@@ -68,6 +73,7 @@ export const generatePairingCode = () => request<{ code: string; expiresAt: stri
 // Config
 export const listConfig = () => request<ConfigEntry[]>('GET', '/admin/config');
 export const setConfig = (key: string, value: string) => request<void>('PUT', `/admin/config/${key}`, { value });
+export const patchConfig = (updates: Record<string, string>) => request<{ ok: boolean }>('PATCH', '/admin/config', updates);
 
 // MCP
 export const listMCP = () => request<MCPServer[]>('GET', '/admin/mcp');
@@ -78,6 +84,13 @@ export const revokeOAuth = (id: string) => request<void>('DELETE', `/admin/oauth
 
 // Setup
 export const completeSetup = () => request<{ ok: boolean }>('POST', '/admin/setup/complete');
+export const getSetupCheck = () => request<SetupCheckResponse>('GET', '/admin/setup/check');
+
+// Connectors
+export const listConnectors = () => request<ConnectorEntry[]>('GET', '/admin/connectors');
+export const saveConnector = (provider: string, data: { client_id: string; client_secret: string }) =>
+  request<{ ok: boolean }>('PUT', `/admin/connectors/${provider}`, data);
+export const removeConnector = (provider: string) => request<{ ok: boolean }>('DELETE', `/admin/connectors/${provider}`);
 
 // Telegram setup
 export const getTelegramWebhook = () => request<WebhookInfoResponse>('GET', '/admin/telegram/webhook');
@@ -87,3 +100,14 @@ export const setupTelegramChannel = () => request<TelegramSetupResponse>('POST',
 export const listCatalog = () => request<CatalogSkill[]>('GET', '/admin/skills/catalog');
 export const installCatalogSkill = (name: string, secrets?: Record<string, string>) =>
   request<{ ok: boolean; name: string }>('POST', `/admin/skills/catalog/${name}/install`, { secrets: secrets ?? {} });
+
+// Onboarding
+export const getOnboardingStatus = () => request<OnboardingStatus>('GET', '/admin/onboarding/status');
+export const submitOwnerUsername = (username: string) =>
+  request<{ ok: boolean }>('POST', '/admin/onboarding/username', { username });
+export const submitBotToken = (token: string) =>
+  request<BotTokenResponse>('POST', '/admin/onboarding/bot-token', { token });
+export const submitTelegramLogin = (data: TelegramLoginData) =>
+  request<TelegramLoginResponse>('POST', '/admin/onboarding/telegram-login', data);
+export const sendWelcomeMessage = () =>
+  request<{ ok: boolean }>('POST', '/admin/onboarding/welcome');
