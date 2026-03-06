@@ -2,6 +2,7 @@ import type { Env } from '../env.ts';
 import type { OAuthTokens, OAuthConnection } from './types.ts';
 import { getProvider } from './providers.ts';
 import { encrypt, decrypt } from '../security/encryption.ts';
+import { getClientCredentials } from './credentials.ts';
 
 export async function encryptTokens(tokens: OAuthTokens, keyHex: string): Promise<Uint8Array> {
   return encrypt(JSON.stringify(tokens), keyHex);
@@ -54,9 +55,8 @@ export async function refreshAccessToken(
   const providerConfig = getProvider(provider);
   if (!providerConfig) return null;
 
-  const clientId = (env as unknown as Record<string, unknown>)[providerConfig.clientIdKey] as string | undefined;
-  const clientSecret = (env as unknown as Record<string, unknown>)[providerConfig.clientSecretKey] as string | undefined;
-  if (!clientId || !clientSecret) return null;
+  const creds = await getClientCredentials(env, provider, providerConfig.clientIdKey, providerConfig.clientSecretKey);
+  if (!creds) return null;
 
   const response = await fetch(providerConfig.tokenUrl, {
     method: 'POST',
@@ -64,8 +64,8 @@ export async function refreshAccessToken(
     body: new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
-      client_id: clientId,
-      client_secret: clientSecret,
+      client_id: creds.clientId,
+      client_secret: creds.clientSecret,
     }),
   });
 

@@ -1,38 +1,69 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { getTelegramWebhook, setupTelegramChannel, listAgents, listAllowlist, completeSetup } from '../api';
+import {
+  getSetupCheck, getTelegramWebhook, setupTelegramChannel,
+  listAgents, listAllowlist, listConnectors,
+  saveConnector, removeConnector, completeSetup,
+} from '../api';
+import type { SetupCheckResponse, ConnectorEntry } from '../types';
 import Card from '../components/Card';
 import ErrorBanner from '../components/ErrorBanner';
 
-interface StepState {
-  webhook: 'loading' | 'pending' | 'done' | 'error';
-  agent: 'loading' | 'pending' | 'done';
-  allowlist: 'loading' | 'pending' | 'done';
+type StepStatus = 'loading' | 'pending' | 'done' | 'error';
+
+interface Steps {
+  secrets: StepStatus;
+  webhook: StepStatus;
+  connectors: StepStatus;
+  agent: StepStatus;
+  allowlist: StepStatus;
 }
+
+const CONNECTOR_LABELS: Record<string, string> = {
+  google: 'Google',
+  github: 'GitHub',
+  microsoft: 'Microsoft',
+};
 
 export default function Setup() {
   const navigate = useNavigate();
-  const [steps, setSteps] = useState<StepState>({ webhook: 'loading', agent: 'loading', allowlist: 'loading' });
+  const [steps, setSteps] = useState<Steps>({
+    secrets: 'loading', webhook: 'loading', connectors: 'loading',
+    agent: 'loading', allowlist: 'loading',
+  });
+  const [secretsInfo, setSecretsInfo] = useState<SetupCheckResponse | null>(null);
   const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookError, setWebhookError] = useState('');
-  const [setupLoading, setSetupLoading] = useState(false);
+  const [webhookLoading, setWebhookLoading] = useState(false);
+  const [connectors, setConnectors] = useState<ConnectorEntry[]>([]);
+  const [connectorForms, setConnectorForms] = useState<Record<string, { clientId: string; clientSecret: string }>>({});
+  const [connectorSaving, setConnectorSaving] = useState<string | null>(null);
+  const [connectorError, setConnectorError] = useState<Record<string, string>>({});
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState('');
 
   async function load() {
     setError('');
     try {
-      const [whInfo, agents, allowlist] = await Promise.all([
+      const [checkInfo, whInfo, agents, allowlist, existingConnectors] = await Promise.all([
+        getSetupCheck(),
         getTelegramWebhook(),
         listAgents(),
         listAllowlist(),
+        listConnectors(),
       ]);
 
+      setSecretsInfo(checkInfo);
+      setConnectors(existingConnectors);
+
+      const allSecretsOk = Object.values(checkInfo.secrets).every(Boolean);
       const hasWebhook = whInfo.ok && whInfo.result.url !== '';
       setWebhookUrl(whInfo.ok ? whInfo.result.url : '');
 
       setSteps({
+        secrets: allSecretsOk ? 'done' : 'error',
         webhook: hasWebhook ? 'done' : 'pending',
+        connectors: 'done', // always "done" since connectors are optional
         agent: agents.length > 0 ? 'done' : 'pending',
         allowlist: allowlist.length > 0 ? 'done' : 'pending',
       });
@@ -44,13 +75,12 @@ export default function Setup() {
   useEffect(() => { load(); }, []);
 
   async function handleSetupWebhook() {
-    setSetupLoading(true);
+    setWebhookLoading(true);
     setWebhookError('');
     try {
       const result = await setupTelegramChannel();
       if (result.webhook.ok) {
         setSteps(s => ({ ...s, webhook: 'done' }));
-        // Reload to get the new URL
         const info = await getTelegramWebhook();
         if (info.ok) setWebhookUrl(info.result.url);
       } else {
@@ -61,11 +91,51 @@ export default function Setup() {
       setWebhookError(String(e));
       setSteps(s => ({ ...s, webhook: 'error' }));
     } finally {
-      setSetupLoading(false);
+      setWebhookLoading(false);
     }
   }
 
-  const allDone = steps.webhook === 'done' && steps.agent === 'done' && steps.allowlist === 'done';
+  function updateConnectorForm(provider: string, field: 'clientId' | 'clientSecret', value: string) {
+    setConnectorForms(f => ({
+      ...f,
+      [provider]: { ...f[provider], [field]: value },
+    }));
+  }
+
+  async function handleSaveConnector(provider: string) {
+    const form = connectorForms[provider];
+    if (!form?.clientId || !form?.clientSecret) {
+      setConnectorError(e => ({ ...e, [provider]: 'Both Client ID and Client Secret are required' }));
+      return;
+    }
+    setConnectorSaving(provider);
+    setConnectorError(e => ({ ...e, [provider]: '' }));
+    try {
+      await saveConnector(provider, { client_id: form.clientId, client_secret: form.clientSecret });
+      setConnectorForms(f => ({ ...f, [provider]: { clientId: '', clientSecret: '' } }));
+      const updated = await listConnectors();
+      setConnectors(updated);
+    } catch (e) {
+      setConnectorError(err => ({ ...err, [provider]: String(e) }));
+    } finally {
+      setConnectorSaving(null);
+    }
+  }
+
+  async function handleRemoveConnector(provider: string) {
+    setConnectorSaving(provider);
+    try {
+      await removeConnector(provider);
+      const updated = await listConnectors();
+      setConnectors(updated);
+    } catch (e) {
+      setConnectorError(err => ({ ...err, [provider]: String(e) }));
+    } finally {
+      setConnectorSaving(null);
+    }
+  }
+
+  const requiredDone = steps.secrets !== 'error' && steps.webhook === 'done' && steps.agent === 'done' && steps.allowlist === 'done';
 
   return (
     <div className="space-y-6">
@@ -78,7 +148,7 @@ export default function Setup() {
 
       {error && <ErrorBanner message={error} onRetry={load} />}
 
-      {allDone && (
+      {requiredDone && (
         <div className="rounded-md bg-green-50 border border-green-200 px-4 py-3 flex items-center justify-between">
           <p className="text-sm font-medium text-green-800">All set! Your bot is ready to use.</p>
           <button
@@ -101,7 +171,39 @@ export default function Setup() {
       )}
 
       <div className="space-y-4">
-        {/* Step 1: Telegram Webhook */}
+        {/* Step 1: Required Secrets */}
+        <Card>
+          <div className="flex items-start gap-3">
+            <StepIcon status={steps.secrets} />
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-semibold text-gray-900">Required Secrets</h3>
+              <p className="mt-0.5 text-xs text-gray-500">
+                These must be set via <code className="text-xs bg-gray-100 px-1 rounded">wrangler secret put</code> before the bot can work.
+              </p>
+              {secretsInfo && (
+                <ul className="mt-2 space-y-1">
+                  {Object.entries(secretsInfo.secrets).map(([key, ok]) => (
+                    <li key={key} className="flex items-center gap-2 text-xs">
+                      {ok ? (
+                        <span className="text-green-600">&#10003;</span>
+                      ) : (
+                        <span className="text-red-500">&#10007;</span>
+                      )}
+                      <code className={ok ? 'text-gray-600' : 'text-red-600 font-medium'}>{key}</code>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {steps.secrets === 'error' && (
+                <p className="mt-2 text-xs text-red-600">
+                  Set the missing secrets with <code className="bg-red-50 px-1 rounded">wrangler secret put &lt;KEY&gt;</code> and reload this page.
+                </p>
+              )}
+            </div>
+          </div>
+        </Card>
+
+        {/* Step 2: Telegram Webhook */}
         <Card>
           <div className="flex items-start gap-3">
             <StepIcon status={steps.webhook} />
@@ -110,31 +212,102 @@ export default function Setup() {
               <p className="mt-0.5 text-xs text-gray-500">
                 Register the webhook so Telegram sends messages to this worker.
               </p>
-
               {steps.webhook === 'done' && webhookUrl && (
                 <p className="mt-2 text-xs text-gray-400 truncate" title={webhookUrl}>
                   {webhookUrl}
                 </p>
               )}
-
               {webhookError && (
                 <p className="mt-2 text-xs text-red-600">{webhookError}</p>
               )}
-
               {steps.webhook !== 'done' && (
                 <button
                   onClick={handleSetupWebhook}
-                  disabled={setupLoading}
+                  disabled={webhookLoading}
                   className="mt-3 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {setupLoading ? 'Registering...' : 'Register Webhook'}
+                  {webhookLoading ? 'Registering...' : 'Register Webhook'}
                 </button>
               )}
             </div>
           </div>
         </Card>
 
-        {/* Step 2: Agent */}
+        {/* Step 3: OAuth Connectors (optional) */}
+        <Card>
+          <div className="flex items-start gap-3">
+            <StepIcon status={steps.connectors} />
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-semibold text-gray-900">OAuth Connectors <span className="text-xs font-normal text-gray-400">(optional)</span></h3>
+              <p className="mt-0.5 text-xs text-gray-500">
+                Configure OAuth providers to let users connect their accounts.
+              </p>
+
+              <div className="mt-3 space-y-3">
+                {(secretsInfo?.connectors ?? []).map(({ id }) => {
+                  const existing = connectors.find(c => c.provider === id);
+                  const form = connectorForms[id] ?? { clientId: '', clientSecret: '' };
+                  const saving = connectorSaving === id;
+                  const errMsg = connectorError[id];
+
+                  return (
+                    <div key={id} className="border border-gray-200 rounded-lg p-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-medium text-gray-800">{CONNECTOR_LABELS[id] ?? id}</h4>
+                        {existing && (
+                          <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-50 px-2 py-0.5 rounded-full">
+                            <span>&#10003;</span> Connected
+                          </span>
+                        )}
+                      </div>
+
+                      {existing ? (
+                        <div className="mt-2 flex items-center justify-between">
+                          <p className="text-xs text-gray-500">Client ID: <code className="bg-gray-100 px-1 rounded">{existing.client_id}</code></p>
+                          <button
+                            onClick={() => handleRemoveConnector(id)}
+                            disabled={saving}
+                            className="text-xs text-red-600 hover:text-red-700 disabled:opacity-50"
+                          >
+                            {saving ? 'Removing...' : 'Remove'}
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="mt-2 space-y-2">
+                          <input
+                            type="text"
+                            placeholder="Client ID"
+                            value={form.clientId}
+                            onChange={e => updateConnectorForm(id, 'clientId', e.target.value)}
+                            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
+                          />
+                          <input
+                            type="password"
+                            placeholder="Client Secret"
+                            value={form.clientSecret}
+                            onChange={e => updateConnectorForm(id, 'clientSecret', e.target.value)}
+                            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
+                          />
+                          <button
+                            onClick={() => handleSaveConnector(id)}
+                            disabled={saving || !form.clientId || !form.clientSecret}
+                            className="px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {saving ? 'Saving...' : 'Save'}
+                          </button>
+                        </div>
+                      )}
+
+                      {errMsg && <p className="mt-1 text-xs text-red-600">{errMsg}</p>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        {/* Step 4: Agent */}
         <Card>
           <div className="flex items-start gap-3">
             <StepIcon status={steps.agent} />
@@ -158,7 +331,7 @@ export default function Setup() {
           </div>
         </Card>
 
-        {/* Step 3: Allowlist */}
+        {/* Step 5: Allowlist */}
         <Card>
           <div className="flex items-start gap-3">
             <StepIcon status={steps.allowlist} />

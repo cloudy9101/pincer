@@ -92,6 +92,18 @@ export interface CatalogSecretField {
   placeholder: string;
 }
 
+export interface SetupCheckResponse {
+  secrets: Record<string, boolean>;
+  connectors: { id: string; configured: boolean }[];
+}
+
+export interface ConnectorEntry {
+  provider: string;
+  client_id: string;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface WebhookInfo {
   url: string;
   has_custom_certificate: boolean;

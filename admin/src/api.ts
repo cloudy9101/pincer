@@ -4,6 +4,7 @@ import type {
   AllowlistEntry, ConfigEntry, StatusResponse, UsageResponse,
   MCPServer, OAuthConnection, CatalogSkill,
   WebhookInfoResponse, TelegramSetupResponse,
+  SetupCheckResponse, ConnectorEntry,
 } from './types';
 
 function authHeaders(): Record<string, string> {
@@ -78,6 +79,13 @@ export const revokeOAuth = (id: string) => request<void>('DELETE', `/admin/oauth
 
 // Setup
 export const completeSetup = () => request<{ ok: boolean }>('POST', '/admin/setup/complete');
+export const getSetupCheck = () => request<SetupCheckResponse>('GET', '/admin/setup/check');
+
+// Connectors
+export const listConnectors = () => request<ConnectorEntry[]>('GET', '/admin/connectors');
+export const saveConnector = (provider: string, data: { client_id: string; client_secret: string }) =>
+  request<{ ok: boolean }>('PUT', `/admin/connectors/${provider}`, data);
+export const removeConnector = (provider: string) => request<{ ok: boolean }>('DELETE', `/admin/connectors/${provider}`);
 
 // Telegram setup
 export const getTelegramWebhook = () => request<WebhookInfoResponse>('GET', '/admin/telegram/webhook');

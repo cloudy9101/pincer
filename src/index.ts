@@ -25,6 +25,8 @@ import type { InlineImage } from './durables/conversation.ts';
 import { handleConnect, handleCallback } from './oauth/flow.ts';
 import { revokeConnection } from './oauth/tokens.ts';
 import { runCronJobs } from './cron/runner.ts';
+import { encrypt, decrypt } from './security/encryption.ts';
+import { listProviders } from './oauth/providers.ts';
 
 export { ConversationSqlDO } from './durables/conversation.ts';
 
@@ -774,6 +776,57 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
   if (path === '/admin/telegram/commands' && request.method === 'POST') {
     const result = await registerTelegramCommands(env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_API_BASE);
     return json(result);
+  }
+
+  // Setup check — verify which required env vars are present and which connectors are configured
+  if (path === '/admin/setup/check' && request.method === 'GET') {
+    const { results: connectorRows } = await env.DB.prepare('SELECT provider FROM oauth_provider_config').all();
+    const configuredProviders = connectorRows.map(r => r.provider as string);
+
+    return json({
+      secrets: {
+        ADMIN_AUTH_TOKEN: !!env.ADMIN_AUTH_TOKEN,
+        ENCRYPTION_KEY: !!env.ENCRYPTION_KEY,
+        TELEGRAM_BOT_TOKEN: !!env.TELEGRAM_BOT_TOKEN,
+        TELEGRAM_WEBHOOK_SECRET: !!env.TELEGRAM_WEBHOOK_SECRET,
+      },
+      connectors: listProviders().map(id => ({
+        id,
+        configured: configuredProviders.includes(id) ||
+          !!(env as unknown as Record<string, string>)[`${id.toUpperCase()}_OAUTH_CLIENT_ID`],
+      })),
+    });
+  }
+
+  // List configured connectors
+  if (path === '/admin/connectors' && request.method === 'GET') {
+    const { results } = await env.DB.prepare(
+      'SELECT provider, client_id, created_at, updated_at FROM oauth_provider_config ORDER BY provider'
+    ).all();
+    return json(results);
+  }
+
+  // Save connector credentials
+  if (path.match(/^\/admin\/connectors\/[^/]+$/) && request.method === 'PUT') {
+    const provider = path.split('/').pop()!;
+    const { client_id, client_secret } = await request.json() as { client_id: string; client_secret: string };
+    if (!client_id || !client_secret) return json({ error: 'client_id and client_secret required' }, 400);
+
+    const encryptedSecret = await encrypt(client_secret, env.ENCRYPTION_KEY);
+    await env.DB.prepare(
+      `INSERT INTO oauth_provider_config (provider, client_id, encrypted_client_secret)
+       VALUES (?, ?, ?)
+       ON CONFLICT(provider) DO UPDATE SET client_id = excluded.client_id,
+         encrypted_client_secret = excluded.encrypted_client_secret, updated_at = unixepoch()`
+    ).bind(provider, client_id, encryptedSecret).run();
+    return json({ ok: true });
+  }
+
+  // Delete connector
+  if (path.match(/^\/admin\/connectors\/[^/]+$/) && request.method === 'DELETE') {
+    const provider = path.split('/').pop()!;
+    await env.DB.prepare('DELETE FROM oauth_provider_config WHERE provider = ?').bind(provider).run();
+    return json({ ok: true });
   }
 
   return new Response('Not Found', { status: 404 });
