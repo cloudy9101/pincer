@@ -21,7 +21,8 @@ export interface Env {
 
   // Secrets - Telegram
   TELEGRAM_BOT_TOKEN: string;
-  TELEGRAM_WEBHOOK_SECRET: string;
+  /** @deprecated — now stored in D1 config and auto-generated during setup. Env var is a fallback. */
+  TELEGRAM_WEBHOOK_SECRET?: string;
 
   // Secrets - Discord
   DISCORD_APP_ID?: string;

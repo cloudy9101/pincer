@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router';
 import {
   getSetupCheck, getTelegramWebhook, setupTelegramChannel,
   listAgents, listAllowlist, listConnectors,
-  saveConnector, removeConnector, completeSetup,
+  saveConnector, removeConnector, completeSetup, patchConfig,
 } from '../api';
 import type { SetupCheckResponse, ConnectorEntry } from '../types';
 import Card from '../components/Card';
@@ -13,7 +13,7 @@ type StepStatus = 'loading' | 'pending' | 'done' | 'error';
 
 interface Steps {
   secrets: StepStatus;
-  webhook: StepStatus;
+  telegram: StepStatus;
   connectors: StepStatus;
   agent: StepStatus;
   allowlist: StepStatus;
@@ -28,13 +28,16 @@ const CONNECTOR_LABELS: Record<string, string> = {
 export default function Setup() {
   const navigate = useNavigate();
   const [steps, setSteps] = useState<Steps>({
-    secrets: 'loading', webhook: 'loading', connectors: 'loading',
+    secrets: 'loading', telegram: 'loading', connectors: 'loading',
     agent: 'loading', allowlist: 'loading',
   });
   const [secretsInfo, setSecretsInfo] = useState<SetupCheckResponse | null>(null);
   const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookError, setWebhookError] = useState('');
   const [webhookLoading, setWebhookLoading] = useState(false);
+  const [ownerId, setOwnerId] = useState('');
+  const [ownerIdSaving, setOwnerIdSaving] = useState(false);
+  const [ownerIdSaved, setOwnerIdSaved] = useState(false);
   const [connectors, setConnectors] = useState<ConnectorEntry[]>([]);
   const [connectorForms, setConnectorForms] = useState<Record<string, { clientId: string; clientSecret: string }>>({});
   const [connectorSaving, setConnectorSaving] = useState<string | null>(null);
@@ -59,10 +62,15 @@ export default function Setup() {
       const allSecretsOk = Object.values(checkInfo.secrets).every(Boolean);
       const hasWebhook = whInfo.ok && whInfo.result.url !== '';
       setWebhookUrl(whInfo.ok ? whInfo.result.url : '');
+      setOwnerId(checkInfo.telegram.ownerId);
+      if (checkInfo.telegram.ownerId) setOwnerIdSaved(true);
+
+      // Telegram step is done when webhook is registered (secret is auto-generated)
+      const telegramDone = hasWebhook && checkInfo.telegram.webhookSecretConfigured;
 
       setSteps({
         secrets: allSecretsOk ? 'done' : 'error',
-        webhook: hasWebhook ? 'done' : 'pending',
+        telegram: telegramDone ? 'done' : 'pending',
         connectors: 'done', // always "done" since connectors are optional
         agent: agents.length > 0 ? 'done' : 'pending',
         allowlist: allowlist.length > 0 ? 'done' : 'pending',
@@ -80,18 +88,30 @@ export default function Setup() {
     try {
       const result = await setupTelegramChannel();
       if (result.webhook.ok) {
-        setSteps(s => ({ ...s, webhook: 'done' }));
+        setSteps(s => ({ ...s, telegram: 'done' }));
         const info = await getTelegramWebhook();
         if (info.ok) setWebhookUrl(info.result.url);
       } else {
         setWebhookError(result.webhook.description ?? 'Failed to register webhook');
-        setSteps(s => ({ ...s, webhook: 'error' }));
+        setSteps(s => ({ ...s, telegram: 'error' }));
       }
     } catch (e) {
       setWebhookError(String(e));
-      setSteps(s => ({ ...s, webhook: 'error' }));
+      setSteps(s => ({ ...s, telegram: 'error' }));
     } finally {
       setWebhookLoading(false);
+    }
+  }
+
+  async function handleSaveOwnerId() {
+    setOwnerIdSaving(true);
+    try {
+      await patchConfig({ telegram_owner_id: ownerId.trim() });
+      setOwnerIdSaved(true);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setOwnerIdSaving(false);
     }
   }
 
@@ -135,7 +155,7 @@ export default function Setup() {
     }
   }
 
-  const requiredDone = steps.secrets !== 'error' && steps.webhook === 'done' && steps.agent === 'done' && steps.allowlist === 'done';
+  const requiredDone = steps.secrets !== 'error' && steps.telegram === 'done' && steps.agent === 'done' && steps.allowlist === 'done';
 
   return (
     <div className="space-y-6">
@@ -203,24 +223,26 @@ export default function Setup() {
           </div>
         </Card>
 
-        {/* Step 2: Telegram Webhook */}
+        {/* Step 2: Telegram Setup */}
         <Card>
           <div className="flex items-start gap-3">
-            <StepIcon status={steps.webhook} />
+            <StepIcon status={steps.telegram} />
             <div className="flex-1 min-w-0">
               <h3 className="text-sm font-semibold text-gray-900">Connect Telegram</h3>
               <p className="mt-0.5 text-xs text-gray-500">
-                Register the webhook so Telegram sends messages to this worker.
+                Register the webhook and configure Telegram settings. The webhook secret is generated automatically.
               </p>
-              {steps.webhook === 'done' && webhookUrl && (
+
+              {/* Webhook status */}
+              {steps.telegram === 'done' && webhookUrl && (
                 <p className="mt-2 text-xs text-gray-400 truncate" title={webhookUrl}>
-                  {webhookUrl}
+                  Webhook: {webhookUrl}
                 </p>
               )}
               {webhookError && (
                 <p className="mt-2 text-xs text-red-600">{webhookError}</p>
               )}
-              {steps.webhook !== 'done' && (
+              {steps.telegram !== 'done' && (
                 <button
                   onClick={handleSetupWebhook}
                   disabled={webhookLoading}
@@ -229,6 +251,32 @@ export default function Setup() {
                   {webhookLoading ? 'Registering...' : 'Register Webhook'}
                 </button>
               )}
+
+              {/* Owner ID */}
+              <div className="mt-4 pt-3 border-t border-gray-100">
+                <label className="block text-xs font-medium text-gray-700">
+                  Owner Telegram User ID <span className="text-gray-400 font-normal">(optional)</span>
+                </label>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Set this so you are recognised as the bot owner on first contact. Find your ID by messaging @userinfobot on Telegram.
+                </p>
+                <div className="mt-1.5 flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="e.g. 123456789"
+                    value={ownerId}
+                    onChange={e => { setOwnerId(e.target.value); setOwnerIdSaved(false); }}
+                    className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
+                  />
+                  <button
+                    onClick={handleSaveOwnerId}
+                    disabled={ownerIdSaving || ownerIdSaved}
+                    className="px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {ownerIdSaving ? 'Saving...' : ownerIdSaved ? 'Saved' : 'Save'}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </Card>
@@ -338,7 +386,7 @@ export default function Setup() {
             <div className="flex-1 min-w-0">
               <h3 className="text-sm font-semibold text-gray-900">Add Users</h3>
               <p className="mt-0.5 text-xs text-gray-500">
-                Add at least one user to the allowlist, or set TELEGRAM_OWNER_ID to auto-approve on first message.
+                Add at least one user to the allowlist. If you set an Owner ID above, that user is auto-approved on first message.
               </p>
               {steps.allowlist === 'pending' && (
                 <Link

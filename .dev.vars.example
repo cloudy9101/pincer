@@ -21,19 +21,14 @@ ADMIN_AUTH_TOKEN=
 ENCRYPTION_KEY=
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
-# Create a bot with @BotFather (https://t.me/BotFather) to get these.
+# Create a bot with @BotFather (https://t.me/BotFather) to get the token.
 
 # Bot token provided by @BotFather (e.g. 123456:ABC-DEF…)
 TELEGRAM_BOT_TOKEN=
 
-# Random secret sent with every Telegram webhook request for verification.
-# Generate:  openssl rand -hex 32
-TELEGRAM_WEBHOOK_SECRET=
-
-# Your Telegram user ID — set this so you are recognised as the bot owner on
-# first contact instead of relying on "first user wins" auto-approval.
-# Find your ID by messaging @userinfobot on Telegram.
-TELEGRAM_OWNER_ID=
+# The webhook secret and owner ID are now configured through the admin
+# dashboard Setup page and stored in D1 — no need to set them here.
+# The webhook secret is auto-generated when you click "Register Webhook".
 
 # ── OAuth Providers ──────────────────────────────────────────────────────────
 # OAuth client credentials (Google, GitHub, Microsoft) are now configured

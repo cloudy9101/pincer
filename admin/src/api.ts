@@ -69,6 +69,7 @@ export const generatePairingCode = () => request<{ code: string; expiresAt: stri
 // Config
 export const listConfig = () => request<ConfigEntry[]>('GET', '/admin/config');
 export const setConfig = (key: string, value: string) => request<void>('PUT', `/admin/config/${key}`, { value });
+export const patchConfig = (updates: Record<string, string>) => request<{ ok: boolean }>('PATCH', '/admin/config', updates);
 
 // MCP
 export const listMCP = () => request<MCPServer[]>('GET', '/admin/mcp');

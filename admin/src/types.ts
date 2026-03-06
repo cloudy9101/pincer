@@ -94,6 +94,10 @@ export interface CatalogSecretField {
 
 export interface SetupCheckResponse {
   secrets: Record<string, boolean>;
+  telegram: {
+    webhookSecretConfigured: boolean;
+    ownerId: string;
+  };
   connectors: { id: string; configured: boolean }[];
 }
 

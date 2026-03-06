@@ -98,8 +98,9 @@ export default {
 
 async function handleTelegramWebhook(request: Request, env: Env, ctx: ExecutionContext, traceId: string): Promise<Response> {
   try {
-    // Verify webhook signature
-    if (!await verifyTelegramWebhook(request, env.TELEGRAM_WEBHOOK_SECRET)) {
+    // Resolve webhook secret: D1 config first, then env var fallback
+    const webhookSecret = await getConfigValue(env.DB, env.CACHE, 'telegram_webhook_secret') ?? env.TELEGRAM_WEBHOOK_SECRET ?? '';
+    if (!webhookSecret || !await verifyTelegramWebhook(request, webhookSecret)) {
       return new Response('Unauthorized', { status: 401 });
     }
 
@@ -131,10 +132,11 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, traceId: s
       const senderAllowed = !allowlistEmpty && await isAllowed(env.DB, msg.channel, msg.senderId);
 
       // Determine if sender is the owner:
-      // - If TELEGRAM_OWNER_ID is configured, only that user ID is the owner.
+      // - If telegram_owner_id is configured (D1 or env var), only that user ID is the owner.
       // - Otherwise, fall back to auto-approving the very first user (empty allowlist).
-      const isOwner = env.TELEGRAM_OWNER_ID
-        ? msg.senderId === env.TELEGRAM_OWNER_ID
+      const ownerId = await getConfigValue(env.DB, env.CACHE, 'telegram_owner_id') ?? env.TELEGRAM_OWNER_ID;
+      const isOwner = ownerId
+        ? msg.senderId === ownerId
         : allowlistEmpty;
 
       if (!senderAllowed && !isOwner) {
@@ -766,9 +768,22 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
   }
 
   // Telegram setup — register webhook + bot commands in one call
+  // Auto-generates webhook secret if not already stored in D1 config
   if (path === '/admin/telegram/setup' && request.method === 'POST') {
     const origin = new URL(request.url).origin;
-    const result = await setupTelegram(origin, env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_WEBHOOK_SECRET, env.TELEGRAM_API_BASE);
+    // Resolve or generate webhook secret
+    let webhookSecret = await getConfigValue(env.DB, env.CACHE, 'telegram_webhook_secret') ?? env.TELEGRAM_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      // Auto-generate a 32-byte hex secret
+      const bytes = new Uint8Array(32);
+      crypto.getRandomValues(bytes);
+      webhookSecret = [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    const result = await setupTelegram(origin, env.TELEGRAM_BOT_TOKEN, webhookSecret, env.TELEGRAM_API_BASE);
+    // Persist webhook secret in D1 on successful registration
+    if (result.webhook.ok) {
+      await setConfigValue(env.DB, env.CACHE, 'telegram_webhook_secret', webhookSecret);
+    }
     return json(result);
   }
 
@@ -783,12 +798,20 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     const { results: connectorRows } = await env.DB.prepare('SELECT provider FROM oauth_provider_config').all();
     const configuredProviders = connectorRows.map(r => r.provider as string);
 
+    const [storedWebhookSecret, storedOwnerId] = await Promise.all([
+      getConfigValue(env.DB, env.CACHE, 'telegram_webhook_secret'),
+      getConfigValue(env.DB, env.CACHE, 'telegram_owner_id'),
+    ]);
+
     return json({
       secrets: {
         ADMIN_AUTH_TOKEN: !!env.ADMIN_AUTH_TOKEN,
         ENCRYPTION_KEY: !!env.ENCRYPTION_KEY,
         TELEGRAM_BOT_TOKEN: !!env.TELEGRAM_BOT_TOKEN,
-        TELEGRAM_WEBHOOK_SECRET: !!env.TELEGRAM_WEBHOOK_SECRET,
+      },
+      telegram: {
+        webhookSecretConfigured: !!(storedWebhookSecret ?? env.TELEGRAM_WEBHOOK_SECRET),
+        ownerId: storedOwnerId ?? env.TELEGRAM_OWNER_ID ?? '',
       },
       connectors: listProviders().map(id => ({
         id,

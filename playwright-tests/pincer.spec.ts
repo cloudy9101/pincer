@@ -364,14 +364,18 @@ test.describe('Admin API', () => {
     expect(body.result).toHaveProperty('url');
   });
 
-  test('GET /admin/setup/check returns secrets and connectors info', async ({ page }) => {
+  test('GET /admin/setup/check returns secrets, telegram, and connectors info', async ({ page }) => {
     const res = await page.request.get(`${BASE_URL}/admin/setup/check`, { headers: authHeaders });
     expect(res.ok()).toBe(true);
     const body = await res.json();
     expect(body).toHaveProperty('secrets');
+    expect(body).toHaveProperty('telegram');
     expect(body).toHaveProperty('connectors');
     expect(typeof body.secrets).toBe('object');
+    expect(typeof body.telegram.webhookSecretConfigured).toBe('boolean');
     expect(Array.isArray(body.connectors)).toBe(true);
+    // TELEGRAM_WEBHOOK_SECRET should no longer be in secrets (now auto-generated)
+    expect(body.secrets).not.toHaveProperty('TELEGRAM_WEBHOOK_SECRET');
   });
 
   test('PUT /admin/connectors/:provider saves and DELETE removes a connector', async ({ page }) => {
