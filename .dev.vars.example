@@ -35,20 +35,10 @@ TELEGRAM_WEBHOOK_SECRET=
 # Find your ID by messaging @userinfobot on Telegram.
 TELEGRAM_OWNER_ID=
 
-# ── OAuth Providers (optional) ────────────────────────────────────────────────
-# Enable these to let users connect their external accounts to the bot.
-
-# Google — https://console.cloud.google.com/apis/credentials
-GOOGLE_OAUTH_CLIENT_ID=
-GOOGLE_OAUTH_CLIENT_SECRET=
-
-# GitHub — https://github.com/settings/developers → OAuth Apps
-GITHUB_OAUTH_CLIENT_ID=
-GITHUB_OAUTH_CLIENT_SECRET=
-
-# Microsoft — https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps
-MICROSOFT_OAUTH_CLIENT_ID=
-MICROSOFT_OAUTH_CLIENT_SECRET=
+# ── OAuth Providers ──────────────────────────────────────────────────────────
+# OAuth client credentials (Google, GitHub, Microsoft) are now configured
+# through the admin dashboard Setup page → OAuth Connectors section.
+# They are stored encrypted in D1 — no need to set them here.
 
 # ── Cloudflare API (optional) ─────────────────────────────────────────────────
 # Needed only if the bot uses Cloudflare-specific tools (e.g. purge cache, R2 ops).
