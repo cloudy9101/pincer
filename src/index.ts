@@ -152,7 +152,7 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, botToken: 
       // Determine if sender is the owner:
       // - If telegram_owner_id is configured (D1 or env var), only that user ID is the owner.
       // - Otherwise, fall back to auto-approving the very first user (empty allowlist).
-      const ownerId = await getConfigValue(env.DB, env.CACHE, 'telegram_owner_id') ?? env.TELEGRAM_OWNER_ID;
+      const ownerId = await getConfigValue(env.DB, env.CACHE, 'telegram_owner_id');
       const isOwner = ownerId
         ? msg.senderId === ownerId
         : allowlistEmpty;
@@ -830,28 +830,27 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
       getConfigValue(env.DB, env.CACHE, 'telegram_owner_username'),
       getConfigValue(env.DB, env.CACHE, 'telegram_login_done'),
     ]);
-    const agents = await env.DB.prepare('SELECT COUNT(*) as cnt FROM agents').first();
+    const [agents, pendingLogin] = await Promise.all([
+      env.DB.prepare('SELECT COUNT(*) as cnt FROM agents').first(),
+      env.CACHE.get('__pending_tg_login'),
+    ]);
 
     return json({
-      ownerUsername: ownerUsername ?? env.TELEGRAM_OWNER_USERNAME ?? '',
+      ownerUsername: ownerUsername ?? '',
       hasBotToken: !!botToken,
       botUsername: storedBotUsername ?? '',
       workerDomain: new URL(request.url).hostname,
       telegramLoginDone: telegramLoginDone === 'true',
+      telegramLoginPending: !!pendingLogin,
       hasAgent: (agents?.cnt as number) > 0,
       setupCompleted: setupCompleted === 'true',
     });
   }
 
-  // Onboarding: save owner username (if not set via env var)
-  if (path === '/admin/onboarding/username' && request.method === 'POST') {
-    const { username } = await request.json() as { username: string };
-    if (!username?.trim()) return json({ error: 'Username is required' }, 400);
-    await setConfigValue(env.DB, env.CACHE, 'telegram_owner_username', username.trim().replace(/^@/, ''));
-    return json({ ok: true });
-  }
-
   // Onboarding: validate & store bot token
+  // In the new flow this is step 4: after Telegram login has already been stored as pending.
+  // On success it verifies the pending login, creates a session, sets up the webhook,
+  // sends a welcome message, and marks setup as complete — all automatically.
   if (path === '/admin/onboarding/bot-token' && request.method === 'POST') {
     const { token } = await request.json() as { token: string };
     if (!token?.trim()) return json({ error: 'Token is required' }, 400);
@@ -872,76 +871,159 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     const b64 = btoa(String.fromCharCode(...encryptedToken));
     await setConfigValue(env.DB, env.CACHE, 'telegram_bot_token_enc', b64);
 
-    // Store bot metadata
+    // Store bot metadata (overwrites any unconfirmed username stored in step 1)
     await setConfigValue(env.DB, env.CACHE, 'telegram_bot_username', meData.result.username);
     await setConfigValue(env.DB, env.CACHE, 'telegram_bot_id', String(meData.result.id));
 
-    return json({ ok: true, botUsername: meData.result.username, botId: meData.result.id });
+    // ── Handle pending Telegram login (deferred HMAC verification) ──────────
+    let sessionToken: string | undefined;
+    let webhookOk = false;
+    let welcomeSent = false;
+
+    const pendingLoginRaw = await env.CACHE.get('__pending_tg_login');
+    if (pendingLoginRaw) {
+      try {
+        const pendingLogin = JSON.parse(pendingLoginRaw) as TelegramLoginData;
+
+        // Verify HMAC with the newly provided bot token
+        const valid = await verifyTelegramLogin(pendingLogin, token.trim());
+        if (valid) {
+          // Create admin session
+          sessionToken = await createAdminSession(env.CACHE, {
+            telegramId: pendingLogin.id,
+            username: pendingLogin.username,
+          });
+
+          // Store owner info
+          await setConfigValue(env.DB, env.CACHE, 'telegram_owner_id', String(pendingLogin.id));
+          await setConfigValue(env.DB, env.CACHE, 'telegram_owner_username', pendingLogin.username ?? '');
+          await setConfigValue(env.DB, env.CACHE, 'telegram_login_done', 'true');
+
+          // Add owner to allowlist
+          await addToAllowlist(env.DB, 'telegram', String(pendingLogin.id), pendingLogin.first_name);
+
+          // Clear pending login
+          await env.CACHE.delete('__pending_tg_login');
+
+          // Auto-setup webhook
+          const origin = new URL(request.url).origin;
+          let webhookSecret = await getConfigValue(env.DB, env.CACHE, 'telegram_webhook_secret') ?? env.TELEGRAM_WEBHOOK_SECRET;
+          if (!webhookSecret) {
+            const bytes = new Uint8Array(32);
+            crypto.getRandomValues(bytes);
+            webhookSecret = [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+          }
+          const setupResult = await setupTelegram(origin, token.trim(), webhookSecret, env.TELEGRAM_API_BASE);
+          if (setupResult.webhook.ok) {
+            await setConfigValue(env.DB, env.CACHE, 'telegram_webhook_secret', webhookSecret);
+            webhookOk = true;
+          }
+
+          // Auto-send welcome message
+          try {
+            await sendTelegramMessage(
+              {
+                channel: 'telegram',
+                chatId: String(pendingLogin.id),
+                text: 'Welcome to Pincer! Your bot is set up and ready to go. Send /help to see available commands.',
+              },
+              token.trim(),
+              env.TELEGRAM_API_BASE,
+            );
+            welcomeSent = true;
+          } catch {
+            // Best effort — don't fail the whole flow if welcome can't be sent
+          }
+
+          // Mark setup as complete
+          await setConfigValue(env.DB, env.CACHE, 'setup_completed', 'true');
+        }
+      } catch {
+        // If pending-login processing fails, token was still stored — caller can retry login
+      }
+    }
+
+    return json({
+      ok: true,
+      botUsername: meData.result.username,
+      botId: meData.result.id,
+      ...(sessionToken ? { sessionToken } : {}),
+      webhookOk,
+      welcomeSent,
+      setupCompleted: !!sessionToken,
+    });
   }
 
-  // Onboarding: verify Telegram Login and create session
+  // Onboarding: verify Telegram Login and create session.
+  // In the new flow this is step 3 (before the bot token is provided).
+  // When no bot token is available the login data is stored in KV for deferred
+  // HMAC verification that happens when the token is submitted in step 4.
   if (path === '/admin/onboarding/telegram-login' && request.method === 'POST') {
     const loginData = await request.json() as TelegramLoginData;
 
     const botToken = await resolveBotToken(env);
-    if (!botToken) return json({ error: 'Bot token not configured yet' }, 400);
 
-    // Verify HMAC signature
-    const valid = await verifyTelegramLogin(loginData, botToken);
-    if (!valid) return json({ error: 'Invalid Telegram login data' }, 401);
-
-    // Resolve expected owner username (if set via env var or D1 config)
-    const expectedUsername = (
-      await getConfigValue(env.DB, env.CACHE, 'telegram_owner_username')
-      ?? env.TELEGRAM_OWNER_USERNAME
-      ?? ''
-    ).toLowerCase();
-
+    // Security check: if TELEGRAM_OWNER_USERNAME is configured, only that user may log in
+    const expectedUsername = env.TELEGRAM_OWNER_USERNAME?.toLowerCase() ?? '';
     const loginUsername = (loginData.username ?? '').toLowerCase();
-
-    // Owner username must be configured before login is allowed
-    if (!expectedUsername) {
-      return json({ error: 'Owner username not configured — complete the username step first' }, 400);
-    }
-    if (loginUsername !== expectedUsername) {
-      return json({ error: `Username mismatch. Expected @${expectedUsername}, got @${loginUsername}` }, 403);
+    if (expectedUsername && loginUsername !== expectedUsername) {
+      return json({ error: `Login rejected: expected @${expectedUsername}` }, 403);
     }
 
-    // Create admin session
-    const sessionToken = await createAdminSession(env.CACHE, {
-      telegramId: loginData.id,
-      username: loginData.username,
-    });
+    if (botToken) {
+      // Bot token is available — verify HMAC immediately and create session
+      const valid = await verifyTelegramLogin(loginData, botToken);
+      if (!valid) return json({ error: 'Invalid Telegram login data' }, 401);
 
-    // Store owner ID and mark login as done
-    await setConfigValue(env.DB, env.CACHE, 'telegram_owner_id', String(loginData.id));
-    await setConfigValue(env.DB, env.CACHE, 'telegram_login_done', 'true');
+      const sessionToken = await createAdminSession(env.CACHE, {
+        telegramId: loginData.id,
+        username: loginData.username,
+      });
 
-    // Auto-add owner to allowlist
-    await addToAllowlist(env.DB, 'telegram', String(loginData.id), loginData.first_name);
+      await setConfigValue(env.DB, env.CACHE, 'telegram_owner_id', String(loginData.id));
+      await setConfigValue(env.DB, env.CACHE, 'telegram_owner_username', loginData.username ?? '');
+      await setConfigValue(env.DB, env.CACHE, 'telegram_login_done', 'true');
+      await addToAllowlist(env.DB, 'telegram', String(loginData.id), loginData.first_name);
 
-    return json({ ok: true, sessionToken, username: loginData.username });
-  }
+      // Auto-complete setup (webhook + welcome + done flag) if not already finished.
+      // This handles the case where the bot token was pre-configured via env var so the
+      // user reaches this endpoint without going through the bot-token step.
+      const alreadyDone = await getConfigValue(env.DB, env.CACHE, 'setup_completed');
+      if (alreadyDone !== 'true') {
+        const origin = new URL(request.url).origin;
+        let webhookSecret = await getConfigValue(env.DB, env.CACHE, 'telegram_webhook_secret') ?? env.TELEGRAM_WEBHOOK_SECRET;
+        if (!webhookSecret) {
+          const bytes = new Uint8Array(32);
+          crypto.getRandomValues(bytes);
+          webhookSecret = [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+        const setupResult = await setupTelegram(origin, botToken, webhookSecret, env.TELEGRAM_API_BASE);
+        if (setupResult.webhook.ok) {
+          await setConfigValue(env.DB, env.CACHE, 'telegram_webhook_secret', webhookSecret);
+        }
+        try {
+          await sendTelegramMessage(
+            {
+              channel: 'telegram',
+              chatId: String(loginData.id),
+              text: 'Welcome to Pincer! Your bot is set up and ready to go. Send /help to see available commands.',
+            },
+            botToken,
+            env.TELEGRAM_API_BASE,
+          );
+        } catch {
+          // Best effort
+        }
+        await setConfigValue(env.DB, env.CACHE, 'setup_completed', 'true');
+      }
 
-  // Onboarding: send welcome message to the owner
-  if (path === '/admin/onboarding/welcome' && request.method === 'POST') {
-    const botToken = await resolveBotToken(env);
-    if (!botToken) return json({ error: 'Bot token not configured' }, 400);
+      return json({ ok: true, sessionToken, username: loginData.username });
+    }
 
-    const ownerId = await getConfigValue(env.DB, env.CACHE, 'telegram_owner_id');
-    if (!ownerId) return json({ error: 'Owner ID not set — complete Telegram Login first' }, 400);
+    // No bot token yet — store raw login data for deferred verification
+    await env.CACHE.put('__pending_tg_login', JSON.stringify(loginData), { expirationTtl: 60 * 60 * 2 });
 
-    await sendTelegramMessage(
-      {
-        channel: 'telegram',
-        chatId: ownerId,
-        text: 'Welcome to Pincer! Your bot is set up and ready to go. Send /help to see available commands.',
-      },
-      botToken,
-      env.TELEGRAM_API_BASE,
-    );
-
-    return json({ ok: true });
+    return json({ ok: true, pending: true, username: loginData.username });
   }
 
   // Setup check — verify which required env vars are present and which connectors are configured
@@ -963,7 +1045,7 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
       },
       telegram: {
         webhookSecretConfigured: !!(storedWebhookSecret ?? env.TELEGRAM_WEBHOOK_SECRET),
-        ownerId: storedOwnerId ?? env.TELEGRAM_OWNER_ID ?? '',
+        ownerId: storedOwnerId ?? '',
       },
       connectors: listProviders().map(id => ({
         id,

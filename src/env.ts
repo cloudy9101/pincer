@@ -21,21 +21,14 @@ export interface Env {
 
   // Secrets - Telegram (optional — can be provided during onboarding instead)
   TELEGRAM_BOT_TOKEN?: string;
-  /** @deprecated — now stored in D1 config and auto-generated during setup. Env var is a fallback. */
   TELEGRAM_WEBHOOK_SECRET?: string;
+  // If set, only this Telegram username is accepted during the onboarding login step.
+  TELEGRAM_OWNER_USERNAME?: string;
 
   // Secrets - Discord
   DISCORD_APP_ID?: string;
   DISCORD_BOT_TOKEN?: string;
   DISCORD_PUBLIC_KEY?: string;
-  // Telegram user ID of the bot owner. Set this when deploying so that user is
-  // automatically approved as owner on first contact. When unset, the first
-  // user to send a message is auto-approved (original behaviour).
-  TELEGRAM_OWNER_ID?: string;
-
-  // Telegram username of the deploying user. Provided at deploy time so the
-  // onboarding flow can verify identity via the Telegram Login Widget.
-  TELEGRAM_OWNER_USERNAME?: string;
 
   // Secrets - Security
   // ENCRYPTION_KEY: auto-generated and stored in KV on first dashboard visit if not set via env var.
