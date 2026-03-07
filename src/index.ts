@@ -152,7 +152,7 @@ async function processTelegramMessage(msg: IncomingMessage, env: Env, botToken: 
       // Determine if sender is the owner:
       // - If telegram_owner_id is configured (D1 or env var), only that user ID is the owner.
       // - Otherwise, fall back to auto-approving the very first user (empty allowlist).
-      const ownerId = await getConfigValue(env.DB, env.CACHE, 'telegram_owner_id') ?? env.TELEGRAM_OWNER_ID;
+      const ownerId = await getConfigValue(env.DB, env.CACHE, 'telegram_owner_id');
       const isOwner = ownerId
         ? msg.senderId === ownerId
         : allowlistEmpty;
@@ -837,7 +837,7 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
 
     return json({
       hasBotUsername: !!storedBotUsername,
-      ownerUsername: ownerUsername ?? env.TELEGRAM_OWNER_USERNAME ?? '',
+      ownerUsername: ownerUsername ?? '',
       hasBotToken: !!botToken,
       botUsername: storedBotUsername ?? '',
       workerDomain: new URL(request.url).hostname,
@@ -853,14 +853,6 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     const { username } = await request.json() as { username: string };
     if (!username?.trim()) return json({ error: 'Username is required' }, 400);
     await setConfigValue(env.DB, env.CACHE, 'telegram_bot_username', username.trim().replace(/^@/, ''));
-    return json({ ok: true });
-  }
-
-  // Onboarding: save owner username (kept for backward compatibility)
-  if (path === '/admin/onboarding/username' && request.method === 'POST') {
-    const { username } = await request.json() as { username: string };
-    if (!username?.trim()) return json({ error: 'Username is required' }, 400);
-    await setConfigValue(env.DB, env.CACHE, 'telegram_owner_username', username.trim().replace(/^@/, ''));
     return json({ ok: true });
   }
 
@@ -980,19 +972,6 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
 
     const botToken = await resolveBotToken(env);
 
-    // Optionally verify username against a pre-configured expected value
-    const expectedUsername = (
-      await getConfigValue(env.DB, env.CACHE, 'telegram_owner_username')
-      ?? env.TELEGRAM_OWNER_USERNAME
-      ?? ''
-    ).toLowerCase();
-
-    const loginUsername = (loginData.username ?? '').toLowerCase();
-
-    if (expectedUsername && loginUsername !== expectedUsername) {
-      return json({ error: `Username mismatch. Expected @${expectedUsername}, got @${loginUsername}` }, 403);
-    }
-
     if (botToken) {
       // Bot token is available — verify HMAC immediately and create session
       const valid = await verifyTelegramLogin(loginData, botToken);
@@ -1049,27 +1028,6 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     return json({ ok: true, pending: true, username: loginData.username });
   }
 
-  // Onboarding: send welcome message to the owner (kept for manual re-trigger)
-  if (path === '/admin/onboarding/welcome' && request.method === 'POST') {
-    const botToken = await resolveBotToken(env);
-    if (!botToken) return json({ error: 'Bot token not configured' }, 400);
-
-    const ownerId = await getConfigValue(env.DB, env.CACHE, 'telegram_owner_id');
-    if (!ownerId) return json({ error: 'Owner ID not set — complete Telegram Login first' }, 400);
-
-    await sendTelegramMessage(
-      {
-        channel: 'telegram',
-        chatId: ownerId,
-        text: 'Welcome to Pincer! Your bot is set up and ready to go. Send /help to see available commands.',
-      },
-      botToken,
-      env.TELEGRAM_API_BASE,
-    );
-
-    return json({ ok: true });
-  }
-
   // Setup check — verify which required env vars are present and which connectors are configured
   if (path === '/admin/setup/check' && request.method === 'GET') {
     const botToken = await resolveBotToken(env);
@@ -1089,7 +1047,7 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
       },
       telegram: {
         webhookSecretConfigured: !!(storedWebhookSecret ?? env.TELEGRAM_WEBHOOK_SECRET),
-        ownerId: storedOwnerId ?? env.TELEGRAM_OWNER_ID ?? '',
+        ownerId: storedOwnerId ?? '',
       },
       connectors: listProviders().map(id => ({
         id,

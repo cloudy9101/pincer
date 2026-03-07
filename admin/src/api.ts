@@ -105,11 +105,7 @@ export const installCatalogSkill = (name: string, secrets?: Record<string, strin
 export const getOnboardingStatus = () => request<OnboardingStatus>('GET', '/admin/onboarding/status');
 export const submitBotUsername = (username: string) =>
   request<{ ok: boolean }>('POST', '/admin/onboarding/bot-username', { username });
-export const submitOwnerUsername = (username: string) =>
-  request<{ ok: boolean }>('POST', '/admin/onboarding/username', { username });
 export const submitBotToken = (token: string) =>
   request<BotTokenResponse>('POST', '/admin/onboarding/bot-token', { token });
 export const submitTelegramLogin = (data: TelegramLoginData) =>
   request<TelegramLoginResponse>('POST', '/admin/onboarding/telegram-login', data);
-export const sendWelcomeMessage = () =>
-  request<{ ok: boolean }>('POST', '/admin/onboarding/welcome');
