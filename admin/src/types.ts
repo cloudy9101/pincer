@@ -58,11 +58,13 @@ export interface StatusResponse {
 }
 
 export interface OnboardingStatus {
+  hasBotUsername: boolean;
   ownerUsername: string;
   hasBotToken: boolean;
   botUsername: string;
   workerDomain: string;
   telegramLoginDone: boolean;
+  telegramLoginPending: boolean;
   hasAgent: boolean;
   setupCompleted: boolean;
 }
@@ -71,6 +73,10 @@ export interface BotTokenResponse {
   ok: boolean;
   botUsername?: string;
   botId?: number;
+  sessionToken?: string;
+  webhookOk?: boolean;
+  welcomeSent?: boolean;
+  setupCompleted?: boolean;
   error?: string;
 }
 
