@@ -22,6 +22,8 @@ export interface Env {
   // Secrets - Telegram (optional — can be provided during onboarding instead)
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
+  // If set, only this Telegram username is accepted during the onboarding login step.
+  TELEGRAM_OWNER_USERNAME?: string;
 
   // Secrets - Discord
   DISCORD_APP_ID?: string;

@@ -836,7 +836,6 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     ]);
 
     return json({
-      hasBotUsername: !!storedBotUsername,
       ownerUsername: ownerUsername ?? '',
       hasBotToken: !!botToken,
       botUsername: storedBotUsername ?? '',
@@ -846,14 +845,6 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
       hasAgent: (agents?.cnt as number) > 0,
       setupCompleted: setupCompleted === 'true',
     });
-  }
-
-  // Onboarding: save bot username (step 1 — before bot token is available)
-  if (path === '/admin/onboarding/bot-username' && request.method === 'POST') {
-    const { username } = await request.json() as { username: string };
-    if (!username?.trim()) return json({ error: 'Username is required' }, 400);
-    await setConfigValue(env.DB, env.CACHE, 'telegram_bot_username', username.trim().replace(/^@/, ''));
-    return json({ ok: true });
   }
 
   // Onboarding: validate & store bot token
@@ -971,6 +962,13 @@ async function handleAdminRoute(request: Request, path: string, env: Env): Promi
     const loginData = await request.json() as TelegramLoginData;
 
     const botToken = await resolveBotToken(env);
+
+    // Security check: if TELEGRAM_OWNER_USERNAME is configured, only that user may log in
+    const expectedUsername = env.TELEGRAM_OWNER_USERNAME?.toLowerCase() ?? '';
+    const loginUsername = (loginData.username ?? '').toLowerCase();
+    if (expectedUsername && loginUsername !== expectedUsername) {
+      return json({ error: `Login rejected: expected @${expectedUsername}` }, 403);
+    }
 
     if (botToken) {
       // Bot token is available — verify HMAC immediately and create session

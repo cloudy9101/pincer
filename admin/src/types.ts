@@ -58,7 +58,6 @@ export interface StatusResponse {
 }
 
 export interface OnboardingStatus {
-  hasBotUsername: boolean;
   ownerUsername: string;
   hasBotToken: boolean;
   botUsername: string;
