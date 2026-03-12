@@ -14,6 +14,8 @@ import Setup from './pages/Setup';
 export default function App() {
   return (
     <Routes>
+      <Route path="/setup" element={<Setup />} />
+
       <Route path="/login" element={<Login />} />
       <Route
         element={
@@ -29,7 +31,6 @@ export default function App() {
         <Route path="sessions" element={<Sessions />} />
         <Route path="allowlist" element={<Allowlist />} />
         <Route path="settings" element={<Settings />} />
-        <Route path="setup" element={<Setup />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

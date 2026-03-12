@@ -3,6 +3,7 @@ import type { SkillAuthConfig } from './types.ts';
 import { getSkill } from './loader.ts';
 import { decrypt } from '../security/encryption.ts';
 import { getAccessToken } from '../oauth/tokens.ts';
+import { ensureEncryptionKey } from '../security/bootstrap.ts';
 
 export interface FetchRequestArgs {
   url: string;
@@ -95,7 +96,7 @@ async function getDecryptedSecret(
   if (!row) return null;
 
   const encrypted = new Uint8Array(row.encrypted_value as ArrayBuffer);
-  return decrypt(encrypted, env.ENCRYPTION_KEY);
+  return decrypt(encrypted, await ensureEncryptionKey(env.CACHE));
 }
 
 /**

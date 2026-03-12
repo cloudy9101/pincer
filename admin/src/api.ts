@@ -102,8 +102,8 @@ export const installCatalogSkill = (name: string, secrets?: Record<string, strin
   request<{ ok: boolean; name: string }>('POST', `/admin/skills/catalog/${name}/install`, { secrets: secrets ?? {} });
 
 // Onboarding
-export const getOnboardingStatus = () => request<OnboardingStatus>('GET', '/admin/onboarding/status');
+export const getOnboardingStatus = () => request<OnboardingStatus>('GET', '/onboarding/status');
 export const submitBotToken = (token: string) =>
-  request<BotTokenResponse>('POST', '/admin/onboarding/bot-token', { token });
+  request<BotTokenResponse>('POST', '/onboarding/bot-token', { token });
 export const submitTelegramLogin = (data: TelegramLoginData) =>
-  request<TelegramLoginResponse>('POST', '/admin/onboarding/telegram-login', data);
+  request<TelegramLoginResponse>('POST', '/onboarding/telegram-login', data);

@@ -3,6 +3,7 @@ import type { OAuthTokens, OAuthConnection } from './types.ts';
 import { getProvider } from './providers.ts';
 import { encrypt, decrypt } from '../security/encryption.ts';
 import { getClientCredentials } from './credentials.ts';
+import { ensureEncryptionKey } from '../security/bootstrap.ts';
 
 export async function encryptTokens(tokens: OAuthTokens, keyHex: string): Promise<Uint8Array> {
   return encrypt(JSON.stringify(tokens), keyHex);
@@ -29,7 +30,7 @@ export async function getAccessToken(
   if (!row) return null;
 
   const encrypted = new Uint8Array(row.encrypted_tokens as ArrayBuffer);
-  const tokens = await decryptTokens(encrypted, env.ENCRYPTION_KEY);
+  const tokens = await decryptTokens(encrypted, await ensureEncryptionKey(env.CACHE));
 
   // Check if token is expired (with 60s buffer)
   if (tokens.expires_at && tokens.expires_at < Math.floor(Date.now() / 1000) + 60) {
@@ -83,7 +84,7 @@ export async function refreshAccessToken(
     tokens.expires_at = Math.floor(Date.now() / 1000) + (data.expires_in as number);
   }
 
-  const encrypted = await encryptTokens(tokens, env.ENCRYPTION_KEY);
+  const encrypted = await encryptTokens(tokens, await ensureEncryptionKey(env.CACHE));
   await env.DB.prepare(
     'UPDATE oauth_connections SET encrypted_tokens = ?, updated_at = unixepoch() WHERE id = ?'
   ).bind(encrypted, connectionId).run();
@@ -116,7 +117,7 @@ export async function getConnection(
   if (!row) return null;
 
   const encrypted = new Uint8Array(row.encrypted_tokens as ArrayBuffer);
-  const tokens = await decryptTokens(encrypted, env.ENCRYPTION_KEY);
+  const tokens = await decryptTokens(encrypted, await ensureEncryptionKey(env.CACHE));
 
   return {
     id: row.id as string,

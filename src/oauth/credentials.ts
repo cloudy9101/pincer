@@ -1,5 +1,6 @@
 import type { Env } from '../env.ts';
 import { decrypt } from '../security/encryption.ts';
+import { ensureEncryptionKey } from '../security/bootstrap.ts';
 
 /**
  * Resolve OAuth client credentials — checks D1 oauth_provider_config first,
@@ -19,7 +20,7 @@ export async function getClientCredentials(
   if (row?.client_id && row?.encrypted_client_secret) {
     const clientSecret = await decrypt(
       new Uint8Array(row.encrypted_client_secret as ArrayBuffer),
-      env.ENCRYPTION_KEY,
+      await ensureEncryptionKey(env.CACHE),
     );
     return { clientId: row.client_id as string, clientSecret };
   }

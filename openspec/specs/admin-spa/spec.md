@@ -20,23 +20,27 @@ The system SHALL serve the admin SPA at `/dashboard/` and all its sub-routes via
 - **THEN** the Worker handles it normally — the SPA sub-path does not interfere
 
 ### Requirement: Auth gate
-The SPA SHALL require an admin bearer token before granting access to any page.
+The SPA SHALL use a Telegram Login session token (not a static admin bearer token) to authenticate. On first visit with no session, if setup is not complete the SPA routes to the onboarding wizard; if setup is complete it routes to the Telegram Login page.
 
-#### Scenario: First visit prompts for token
-- **WHEN** a user visits `/dashboard/` with no token stored in localStorage
-- **THEN** the SPA displays a login screen prompting for the admin token
+#### Scenario: No session and setup incomplete — show onboarding
+- **WHEN** a user visits `/dashboard/` with no session token in localStorage and the setup state indicates `onboarded: false`
+- **THEN** the SPA routes to `/dashboard/onboarding` to begin the setup wizard
 
-#### Scenario: Valid token persisted
-- **WHEN** a user submits a token and the first API call returns HTTP 200
-- **THEN** the token is stored in localStorage and the user is redirected to the Dashboard page
+#### Scenario: No session and setup complete — show login
+- **WHEN** a user visits `/dashboard/` with no session token in localStorage and the setup state indicates `onboarded: true`
+- **THEN** the SPA displays a Telegram Login page (Login with Telegram widget)
 
-#### Scenario: Invalid token shows error
-- **WHEN** a user submits a token and the first API call returns HTTP 401
-- **THEN** the SPA displays an error message and clears the stored token
+#### Scenario: Valid session token grants access
+- **WHEN** a user visits `/dashboard/` with a valid session token in localStorage and any API call returns HTTP 200
+- **THEN** the SPA renders the admin dashboard normally
 
 #### Scenario: Expired or revoked token redirects to login
 - **WHEN** any API call returns HTTP 401 during an authenticated session
-- **THEN** the SPA clears localStorage and redirects to the login screen
+- **THEN** the SPA clears localStorage and redirects to the Telegram Login page
+
+#### Scenario: Telegram Login widget submits to onboarding endpoint
+- **WHEN** a user completes Telegram Login on the login page (post-onboarding)
+- **THEN** the SPA POSTs to `/onboarding/telegram-login`, stores the returned `sessionToken` in localStorage, and redirects to `/dashboard/`
 
 ### Requirement: Responsive navigation shell
 The SPA SHALL provide a persistent navigation shell that is mobile-first and responsive.

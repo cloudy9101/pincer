@@ -12,7 +12,7 @@ import { skillsRouter } from './skills.ts';
 import { mcpRouter } from './mcp.ts';
 import { oauthConnectionsRouter } from './oauth-connections.ts';
 import { cronsRouter } from './crons.ts';
-import { telegramRouter, onboardingRouter } from './telegram.ts';
+import { telegramRouter } from './telegram.ts';
 import { connectorsRouter } from './connectors.ts';
 import { statusRouter, setupRouter } from './status.ts';
 
@@ -46,6 +46,5 @@ adminApp.route('/mcp', mcpRouter);
 adminApp.route('/oauth', oauthConnectionsRouter);
 adminApp.route('/crons', cronsRouter);
 adminApp.route('/telegram', telegramRouter);
-adminApp.route('/onboarding', onboardingRouter);
 adminApp.route('/connectors', connectorsRouter);
 adminApp.route('/setup', setupRouter);

@@ -115,7 +115,7 @@ export class ConversationSqlDO extends DurableObject<Env> {
   /** Resolve bot token from env var or KV (cached for the DO lifetime). */
   private async getBotToken(): Promise<string> {
     if (this.cachedBotToken) return this.cachedBotToken;
-    const token = await resolveBotToken(this.env);
+    const token = await resolveBotToken(this.env.CACHE);
     if (!token) throw new Error('Bot token not configured');
     this.cachedBotToken = token;
     return token;

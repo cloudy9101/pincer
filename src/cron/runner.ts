@@ -72,7 +72,7 @@ async function runJob(env: Env, job: CronJobRow, scheduledTime: number): Promise
     if (!result.text || !job.reply_channel || !job.reply_chat_id) return;
 
     if (job.reply_channel === 'telegram') {
-      const botToken = await resolveBotToken(env);
+      const botToken = await resolveBotToken(env.CACHE);
       if (botToken) {
         await sendTelegramMessage(
           { channel: 'telegram', chatId: job.reply_chat_id, text: result.text },

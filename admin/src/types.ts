@@ -53,29 +53,20 @@ export interface StatusResponse {
   agents: number;
   sessions: number;
   allowlistEntries: number;
-  setupCompleted: boolean;
-  bootstrapMode: boolean;
+  onboarded: boolean;
 }
 
 export interface OnboardingStatus {
-  ownerUsername: string;
+  onboarded: boolean;
   hasBotToken: boolean;
   botUsername: string;
+  ownerUsername: string;
   workerDomain: string;
-  telegramLoginDone: boolean;
-  telegramLoginPending: boolean;
-  hasAgent: boolean;
-  setupCompleted: boolean;
 }
 
 export interface BotTokenResponse {
   ok: boolean;
   botUsername?: string;
-  botId?: number;
-  sessionToken?: string;
-  webhookOk?: boolean;
-  welcomeSent?: boolean;
-  setupCompleted?: boolean;
   error?: string;
 }
 

@@ -3,6 +3,7 @@ import type { OAuthTokens } from './types.ts';
 import { getProvider } from './providers.ts';
 import { encryptTokens } from './tokens.ts';
 import { getClientCredentials } from './credentials.ts';
+import { ensureEncryptionKey } from '../security/bootstrap.ts';
 
 const STATE_EXPIRY_SECONDS = 600; // 10 minutes
 
@@ -206,7 +207,7 @@ export async function handleCallback(request: Request, env: Env): Promise<Respon
     }
 
     // Encrypt and store
-    const encrypted = await encryptTokens(tokens, env.ENCRYPTION_KEY);
+    const encrypted = await encryptTokens(tokens, await ensureEncryptionKey(env.CACHE));
     const connectionId = crypto.randomUUID();
     const scopes = tokens.scope ?? providerConfig.scopes.join(' ');
 
