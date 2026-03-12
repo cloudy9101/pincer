@@ -844,21 +844,6 @@ export async function buildToolSet(ctx: ToolCallContext): Promise<ToolSet> {
     },
   });
 
-  // ─── Plugin tools from D1 ──────────────────────────────────
-
-  const { env } = ctx;
-  const cached = await env.CACHE.get('tools:plugins', 'json') as PluginToolEntry[] | null;
-  const pluginEntries = cached ?? await loadPluginTools(env);
-
-  for (const entry of pluginEntries) {
-    tools[entry.toolName] = tool({
-      description: entry.description,
-      inputSchema: jsonSchema(entry.inputSchema),
-      execute: async (args: unknown) =>
-        executePluginTool(entry.pluginName, entry.toolName, args as Record<string, unknown>, env),
-    });
-  }
-
   return tools;
 }
 
@@ -887,67 +872,3 @@ function formatSearchResult(m: { entry: { id: string; content: string; category:
   };
 }
 
-// ─── Plugin tool helpers ────────────────────────────────────
-
-interface PluginToolEntry {
-  pluginName: string;
-  toolName: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-}
-
-async function loadPluginTools(env: Env): Promise<PluginToolEntry[]> {
-  const { results } = await env.DB
-    .prepare("SELECT name, manifest FROM plugins WHERE status = 'active'")
-    .all();
-
-  const entries: PluginToolEntry[] = [];
-  for (const row of results) {
-    const manifest = JSON.parse(row.manifest as string) as {
-      tools: Array<{ name: string; description: string; input_schema: Record<string, unknown> }>;
-    };
-    for (const t of manifest.tools) {
-      entries.push({
-        pluginName: row.name as string,
-        toolName: t.name,
-        description: t.description,
-        inputSchema: t.input_schema,
-      });
-    }
-  }
-
-  await env.CACHE.put('tools:plugins', JSON.stringify(entries), { expirationTtl: 60 });
-  return entries;
-}
-
-async function executePluginTool(
-  pluginName: string,
-  toolName: string,
-  args: Record<string, unknown>,
-  env: Env
-): Promise<string> {
-  const row = await env.DB.prepare('SELECT worker_url FROM plugins WHERE name = ? AND status = ?')
-    .bind(pluginName, 'active')
-    .first();
-
-  if (!row) return JSON.stringify({ error: `Plugin not found: ${pluginName}` });
-
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
-    headers['CF-Access-Client-Id'] = env.CF_ACCESS_CLIENT_ID;
-    headers['CF-Access-Client-Secret'] = env.CF_ACCESS_CLIENT_SECRET;
-  }
-
-  const response = await fetch(`${row.worker_url as string}/invoke`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ tool: toolName, args }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    return JSON.stringify({ error: `Plugin call failed: ${error}` });
-  }
-
-  return response.text();
-}

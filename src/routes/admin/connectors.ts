@@ -19,7 +19,7 @@ connectorsRouter.put('/:provider', async (c) => {
   const { client_id, client_secret } = await c.req.json() as { client_id: string; client_secret: string };
   if (!client_id || !client_secret) return c.json({ error: 'client_id and client_secret required' }, 400);
 
-  const encKey = await ensureEncryptionKey(c.env);
+  const encKey = await ensureEncryptionKey(c.env.CACHE);
   const encryptedSecret = await encrypt(client_secret, encKey);
   await c.env.DB.prepare(
     `INSERT INTO oauth_provider_config (provider, client_id, encrypted_client_secret)

@@ -6,6 +6,7 @@ import type { MCPServer, MCPToolSchema } from './types.ts';
 import { getMCPServer, invalidateMCPCache } from './loader.ts';
 import { decrypt } from '../security/encryption.ts';
 import { DEFAULTS } from '../config/defaults.ts';
+import { ensureEncryptionKey } from '../security/bootstrap.ts';
 
 /**
  * Build AI SDK tool objects from cached MCP server schemas.
@@ -144,7 +145,7 @@ async function getDecryptedHeaders(
   const headers: Record<string, string> = {};
   for (const row of results) {
     const encrypted = new Uint8Array(row.encrypted_value as ArrayBuffer);
-    headers[row.key as string] = await decrypt(encrypted, env.ENCRYPTION_KEY);
+    headers[row.key as string] = await decrypt(encrypted, await ensureEncryptionKey(env.CACHE));
   }
   return headers;
 }

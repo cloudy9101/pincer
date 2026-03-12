@@ -15,7 +15,7 @@ import { ensureCommandsRegistered } from '../channels/telegram/commands.ts';
 import type { IncomingMessage } from '../channels/types.ts';
 import { downloadTelegramFile } from '../channels/telegram/files.ts';
 import type { InlineImage } from '../durables/conversation.ts';
-import { resolveBotToken } from '../security/bootstrap.ts';
+import { resolveBotToken, resolveTGWebhookSecret } from '../security/bootstrap.ts';
 
 type HonoEnv = { Bindings: Env };
 
@@ -25,13 +25,13 @@ webhookRouter.post('/telegram', async (c) => {
   const { req, env } = c;
   const traceId = crypto.randomUUID();
   try {
-    const botToken = await resolveBotToken(env);
+    const botToken = await resolveBotToken(env.CACHE);
     if (!botToken) {
       log('error', 'Bot token not configured', {}, { traceId, handler: 'telegram' });
       return c.text('Bot not configured', 500);
     }
 
-    const webhookSecret = await getConfigValue(env.DB, env.CACHE, 'telegram_webhook_secret') ?? env.TELEGRAM_WEBHOOK_SECRET ?? '';
+    const webhookSecret = await resolveTGWebhookSecret(env.CACHE) ?? '';
     if (!webhookSecret || !await verifyTelegramWebhook(req.raw, webhookSecret)) {
       return c.text('Unauthorized', 401);
     }
@@ -44,7 +44,7 @@ webhookRouter.post('/telegram', async (c) => {
 
     log('info', 'Webhook received', { method: req.method, path: req.path }, { traceId, handler: 'telegram' });
 
-    c.executionCtx.waitUntil(ensureCommandsRegistered(env.CACHE, botToken, env.TELEGRAM_API_BASE));
+    c.executionCtx.waitUntil(ensureCommandsRegistered(env.CACHE, botToken));
     c.executionCtx.waitUntil(processTelegramMessage(msg, env, botToken, traceId));
     return c.text('OK');
   } catch (error) {

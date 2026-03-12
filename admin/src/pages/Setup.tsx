@@ -8,9 +8,9 @@ import { setToken } from '../auth';
 import Card from '../components/Card';
 import ErrorBanner from '../components/ErrorBanner';
 
-type Step = 'create-bot' | 'set-domain' | 'telegram-login' | 'bot-token';
+type Step = 'create-bot' | 'bot-token' | 'set-domain' | 'telegram-login';
 
-const ALL_STEPS: Step[] = ['create-bot', 'set-domain', 'telegram-login', 'bot-token'];
+const ALL_STEPS: Step[] = ['create-bot', 'bot-token', 'set-domain', 'telegram-login'];
 
 function stepIndex(step: Step): number {
   return ALL_STEPS.indexOf(step);
@@ -25,8 +25,7 @@ export default function Setup() {
 
   // Step-specific state
   const [domainCopied, setDomainCopied] = useState(false);
-  // Bot username is only held in local state — confirmed via getMe when token is submitted
-  const [botUsernameInput, setBotUsernameInput] = useState('');
+  const [botUsername, setBotUsername] = useState('');
   const [loginError, setLoginError] = useState('');
   const [botTokenInput, setBotTokenInput] = useState('');
   const [botTokenLoading, setBotTokenLoading] = useState(false);
@@ -37,14 +36,15 @@ export default function Setup() {
       const s = await getOnboardingStatus();
       setStatus(s);
 
-      if (s.setupCompleted) {
+      if (s.onboarded) {
         navigate('/', { replace: true });
         return;
       }
 
       // Resume at the furthest incomplete step
-      if (s.telegramLoginPending || s.telegramLoginDone) {
-        setCurrentStep('bot-token');
+      if (s.hasBotToken) {
+        setBotUsername(s.botUsername);
+        setCurrentStep('set-domain');
       } else {
         setCurrentStep('create-bot');
       }
@@ -61,16 +61,9 @@ export default function Setup() {
     setLoginError('');
     try {
       const result = await submitTelegramLogin(data);
-      if (result.ok) {
-        if (result.sessionToken) {
-          // Bot token was already configured — login + setup complete
-          setToken(result.sessionToken);
-          navigate('/', { replace: true });
-        } else {
-          // Pending — move to bot-token step
-          setStatus(s => s ? { ...s, telegramLoginPending: true } : s);
-          setCurrentStep('bot-token');
-        }
+      if (result.ok && result.sessionToken) {
+        setToken(result.sessionToken);
+        navigate('/', { replace: true });
       } else {
         setLoginError(result.error ?? 'Login failed');
       }
@@ -85,11 +78,10 @@ export default function Setup() {
     setError('');
     try {
       const result = await submitBotToken(botTokenInput.trim());
-      if (result.ok) {
-        if (result.sessionToken) {
-          setToken(result.sessionToken);
-        }
-        navigate('/', { replace: true });
+      if (result.ok && result.botUsername) {
+        setBotUsername(result.botUsername);
+        setStatus(s => s ? { ...s, hasBotToken: true, botUsername: result.botUsername! } : s);
+        setCurrentStep('set-domain');
       } else {
         setError(result.error ?? 'Failed to validate bot token');
       }
@@ -154,11 +146,11 @@ export default function Setup() {
                   </li>
                   <li>Choose a display name for your bot (e.g. &ldquo;My AI Assistant&rdquo;)</li>
                   <li>Choose a username ending in <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs">bot</code> (e.g. &ldquo;my_ai_assistant_bot&rdquo;)</li>
-                  <li>BotFather will give you a <strong>bot token</strong> &mdash; keep it ready for later</li>
+                  <li>BotFather will give you a <strong>bot token</strong> &mdash; keep it ready for the next step</li>
                 </ol>
               </div>
               <button
-                onClick={() => setCurrentStep('set-domain')}
+                onClick={() => setCurrentStep('bot-token')}
                 className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700"
               >
                 I have my bot &mdash; Continue
@@ -167,12 +159,45 @@ export default function Setup() {
           </Card>
         )}
 
-        {/* Step 2: Set Login Domain */}
-        {currentStep === 'set-domain' && (
+        {/* Step 2: Provide Bot Token */}
+        {currentStep === 'bot-token' && (
           <Card>
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <StepBadge n={2} />
+                <h3 className="text-sm font-semibold text-gray-900">Enter Bot Token</h3>
+              </div>
+              <p className="text-xs text-gray-500">
+                Paste the token you received from @BotFather. This validates your bot and registers the webhook.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  placeholder="123456789:ABCdefGhIjKlmnOPQrstUVwxyz"
+                  value={botTokenInput}
+                  onChange={e => setBotTokenInput(e.target.value)}
+                  className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 font-mono"
+                  autoFocus
+                  onKeyDown={e => e.key === 'Enter' && handleSubmitBotToken()}
+                />
+                <button
+                  onClick={handleSubmitBotToken}
+                  disabled={botTokenLoading || !botTokenInput.trim()}
+                  className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {botTokenLoading ? 'Validating...' : 'Next'}
+                </button>
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {/* Step 3: Set Login Domain */}
+        {currentStep === 'set-domain' && (
+          <Card>
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <StepBadge n={3} />
                 <h3 className="text-sm font-semibold text-gray-900">Set Bot Login Domain</h3>
               </div>
               <div className="text-xs text-gray-600 space-y-2">
@@ -183,7 +208,7 @@ export default function Setup() {
                   <li>
                     Send <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs">/setdomain</code>
                   </li>
-                  <li>Select your bot</li>
+                  <li>Select your bot{botUsername ? ` (@${botUsername})` : ''}</li>
                   <li>Send this domain:</li>
                 </ol>
                 {status?.workerDomain && (
@@ -212,68 +237,26 @@ export default function Setup() {
           </Card>
         )}
 
-        {/* Step 3: Login with Telegram */}
+        {/* Step 4: Login with Telegram */}
         {currentStep === 'telegram-login' && (
           <Card>
             <div className="space-y-3">
               <div className="flex items-center gap-2">
-                <StepBadge n={3} />
+                <StepBadge n={4} />
                 <h3 className="text-sm font-semibold text-gray-900">Login with Telegram</h3>
               </div>
               <p className="text-xs text-gray-500">
-                Enter your bot&apos;s username so the login button can load, then click it to verify your identity.
+                Click the button below to verify your identity as the bot owner.
               </p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="@my_ai_assistant_bot"
-                  value={botUsernameInput}
-                  onChange={e => setBotUsernameInput(e.target.value)}
-                  className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 font-mono"
-                />
-              </div>
               {loginError && (
                 <p className="text-xs text-red-600">{loginError}</p>
               )}
-              {botUsernameInput.trim() && (
+              {botUsername && (
                 <TelegramLoginWidget
-                  botUsername={botUsernameInput.trim().replace(/^@/, '')}
+                  botUsername={botUsername}
                   onAuth={handleTelegramLogin}
                 />
               )}
-            </div>
-          </Card>
-        )}
-
-        {/* Step 4: Provide Bot Token */}
-        {currentStep === 'bot-token' && (
-          <Card>
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <StepBadge n={4} />
-                <h3 className="text-sm font-semibold text-gray-900">Enter Bot Token</h3>
-              </div>
-              <p className="text-xs text-gray-500">
-                Paste the token you received from @BotFather. Once submitted, your bot will be fully configured — the webhook will be registered and a welcome message sent to you on Telegram.
-              </p>
-              <div className="flex gap-2">
-                <input
-                  type="password"
-                  placeholder="123456789:ABCdefGhIjKlmnOPQrstUVwxyz"
-                  value={botTokenInput}
-                  onChange={e => setBotTokenInput(e.target.value)}
-                  className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 font-mono"
-                  autoFocus
-                  onKeyDown={e => e.key === 'Enter' && handleSubmitBotToken()}
-                />
-                <button
-                  onClick={handleSubmitBotToken}
-                  disabled={botTokenLoading || !botTokenInput.trim()}
-                  className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {botTokenLoading ? 'Configuring...' : 'Finish Setup'}
-                </button>
-              </div>
             </div>
           </Card>
         )}

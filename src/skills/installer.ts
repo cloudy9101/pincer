@@ -3,6 +3,7 @@ import type { Skill, SkillInstallInput } from './types.ts';
 import { parseSkillContent } from './parser.ts';
 import { getSkill, invalidateSkillsCache } from './loader.ts';
 import { encrypt } from '../security/encryption.ts';
+import { ensureEncryptionKey } from '../security/bootstrap.ts';
 
 /**
  * Install a skill from raw content or URL. Parses frontmatter,
@@ -87,7 +88,7 @@ export async function updateSkillSecrets(
   secrets: Record<string, string>,
 ): Promise<void> {
   for (const [key, value] of Object.entries(secrets)) {
-    const encrypted = await encrypt(value, env.ENCRYPTION_KEY);
+    const encrypted = await encrypt(value, await ensureEncryptionKey(env.CACHE));
     // D1 accepts ArrayBuffer for BLOB columns
     await env.DB.prepare(
       `INSERT INTO skill_secrets (skill_name, key, encrypted_value)

@@ -18,23 +18,22 @@ const WEBHOOK_SECRET = 'test-webhook-secret';
 
 const authHeaders = { Authorization: `Bearer ${ADMIN_TOKEN}` };
 
-/** Mark onboarding as complete so the SPA doesn't redirect to /setup. */
-async function completeSetupViaAPI(page: Page): Promise<void> {
-  await page.request.post(`${BASE_URL}/admin/setup/complete`, { headers: authHeaders });
+/**
+ * Seed KV with onboarded state and a test session token.
+ * Uses the dev-seed endpoint (only available when MOCK_AI_RESPONSE is set).
+ */
+async function seedState(page: Page): Promise<void> {
+  await page.request.post(`${BASE_URL}/onboarding/dev-seed`);
 }
 
-/** Reset the setup_completed flag so the SPA redirects to /setup. */
+/** Reset the onboarded flag so the Worker redirects to /dashboard/onboarding. */
 async function resetSetupViaAPI(page: Page): Promise<void> {
-  await page.request.patch(`${BASE_URL}/admin/config`, {
-    data: { setup_completed: 'false' },
-    headers: authHeaders,
-  });
+  await page.request.post(`${BASE_URL}/onboarding/dev-reset`);
 }
 
-/** Authenticate the admin SPA by injecting the token into localStorage. */
+/** Authenticate the admin SPA by seeding state and injecting the session token. */
 async function loginSPA(page: Page): Promise<void> {
-  // Ensure setup is marked complete so AuthGuard doesn't redirect to /setup
-  await completeSetupViaAPI(page);
+  await seedState(page);
   await page.goto(`${BASE_URL}/dashboard/`);
   // Key must match TOKEN_KEY in admin/src/auth.ts
   await page.evaluate((token) => localStorage.setItem('pincer_admin_token', token), ADMIN_TOKEN);
@@ -123,24 +122,24 @@ test.describe('Health', () => {
 // ─── Admin SPA — Auth gate ────────────────────────────────────────────────────
 
 test.describe('Admin SPA — auth gate', () => {
-  test('unauthenticated visit to /dashboard/ shows login screen', async ({ page }) => {
-    await page.goto(`${BASE_URL}/dashboard/`);
-    // Login page must ask for a token (no sidebar should be visible)
-    await expect(page.getByRole('heading', { name: /pincer|admin|login/i })).toBeVisible();
-    // Use getByLabel because <input type="password"> is not exposed as role=textbox
-    await expect(page.getByLabel(/admin token|token/i)).toBeVisible();
+  test('unauthenticated, not-onboarded visit redirects to /dashboard/setup', async ({ page }) => {
+    await resetSetupViaAPI(page);
+    const res = await page.request.get(`${BASE_URL}/dashboard/`, { maxRedirects: 0 });
+    // Worker should 302 to /dashboard/setup when not onboarded
+    expect(res.status()).toBe(302);
+    expect(res.headers()['location']).toContain('/dashboard/setup');
   });
 
-  test('submitting invalid token shows error', async ({ page }) => {
+  test('onboarded visit with no session shows SPA login screen', async ({ page }) => {
+    await seedState(page);
     await page.goto(`${BASE_URL}/dashboard/`);
-    await page.getByLabel(/admin token|token/i).fill('wrong-token');
-    await page.getByRole('button', { name: /save|connect|login|sign|submit/i }).click();
-    await expect(page.getByText(/Invalid|error/i)).toBeVisible();
+    // SPA should show some form of login (token input or Telegram Login)
+    await expect(page.getByRole('heading', { name: /pincer|admin|login|setup/i })).toBeVisible();
   });
 
-  test('valid token persists and redirects to dashboard', async ({ page }) => {
+  test('valid session token grants access to dashboard', async ({ page }) => {
     await loginSPA(page);
-    // After login we should see the dashboard — not the login form
+    // After login we should see the dashboard — not just the onboarding page
     await expect(page.getByLabel(/admin token|token/i)).not.toBeVisible();
   });
 });
@@ -175,8 +174,8 @@ test.describe('Admin SPA — setup onboarding', () => {
   });
 
   test('completing setup allows access to dashboard', async ({ page }) => {
-    // First mark setup complete via API
-    await completeSetupViaAPI(page);
+    // Seed onboarded state via API
+    await seedState(page);
 
     // Now login — should reach dashboard, not setup
     await page.goto(`${BASE_URL}/dashboard/`);
@@ -305,19 +304,23 @@ test.describe('Admin SPA — agents CRUD', () => {
 // ─── Admin API (raw) ──────────────────────────────────────────────────────────
 
 test.describe('Admin API', () => {
+  test.beforeAll(async ({ request }) => {
+    await request.post(`${BASE_URL}/onboarding/dev-seed`);
+  });
+
   test('returns 401 without Authorization header', async ({ page }) => {
     const res = await page.request.get(`${BASE_URL}/admin/status`);
     expect(res.status()).toBe(401);
   });
 
-  test('GET /admin/status returns counts and setupCompleted flag', async ({ page }) => {
+  test('GET /admin/status returns counts and onboarded flag', async ({ page }) => {
     const res = await page.request.get(`${BASE_URL}/admin/status`, { headers: authHeaders });
     expect(res.ok()).toBe(true);
     const body = await res.json();
     expect(body).toHaveProperty('agents');
     expect(body).toHaveProperty('sessions');
-    expect(body).toHaveProperty('setupCompleted');
-    expect(typeof body.setupCompleted).toBe('boolean');
+    expect(body).toHaveProperty('onboarded');
+    expect(typeof body.onboarded).toBe('boolean');
   });
 
   test('GET /admin/agents returns array', async ({ page }) => {
@@ -343,18 +346,6 @@ test.describe('Admin API', () => {
     expect(body.ok).toBe(true);
   });
 
-  test('POST /admin/setup/complete marks setup as done', async ({ page }) => {
-    const res = await page.request.post(`${BASE_URL}/admin/setup/complete`, { headers: authHeaders });
-    expect(res.ok()).toBe(true);
-    const body = await res.json();
-    expect(body.ok).toBe(true);
-
-    // Verify the status now reflects setupCompleted
-    const status = await page.request.get(`${BASE_URL}/admin/status`, { headers: authHeaders });
-    const statusBody = await status.json();
-    expect(statusBody.setupCompleted).toBe(true);
-  });
-
   test('GET /admin/telegram/webhook returns webhook info', async ({ page }) => {
     const res = await page.request.get(`${BASE_URL}/admin/telegram/webhook`, { headers: authHeaders });
     expect(res.ok()).toBe(true);
@@ -372,10 +363,10 @@ test.describe('Admin API', () => {
     expect(body).toHaveProperty('telegram');
     expect(body).toHaveProperty('connectors');
     expect(typeof body.secrets).toBe('object');
-    expect(typeof body.telegram.webhookSecretConfigured).toBe('boolean');
+    // secrets now has TELEGRAM_BOT_TOKEN and ENCRYPTION_KEY (both KV-based)
+    expect(typeof body.secrets.TELEGRAM_BOT_TOKEN).toBe('boolean');
+    expect(typeof body.secrets.ENCRYPTION_KEY).toBe('boolean');
     expect(Array.isArray(body.connectors)).toBe(true);
-    // TELEGRAM_WEBHOOK_SECRET should no longer be in secrets (now auto-generated)
-    expect(body.secrets).not.toHaveProperty('TELEGRAM_WEBHOOK_SECRET');
   });
 
   test('PUT /admin/connectors/:provider saves and DELETE removes a connector', async ({ page }) => {
@@ -462,6 +453,8 @@ test.describe('Telegram webhook — AI response (mock)', () => {
   let ownerId: number;
 
   test.beforeAll(async ({ request }) => {
+    // Seed KV session so admin API calls are authenticated
+    await request.post(`${BASE_URL}/onboarding/dev-seed`);
     // Add a known user to the allowlist so they can chat
     ownerId = 777_001 + Math.floor(Math.random() * 1000);
     await request.post(`${BASE_URL}/admin/allowlist`, {

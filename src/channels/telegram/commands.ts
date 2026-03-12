@@ -32,9 +32,8 @@ const KV_KEY = 'tg:commands_registered';
  */
 export async function registerTelegramCommands(
   botToken: string,
-  apiBase?: string,
 ): Promise<{ ok: boolean; description?: string }> {
-  const base = (apiBase ?? DEFAULT_TELEGRAM_API) + '/bot';
+  const base = DEFAULT_TELEGRAM_API + '/bot';
   const response = await fetch(`${base}${botToken}/setMyCommands`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -53,12 +52,11 @@ export async function registerTelegramCommands(
 export async function ensureCommandsRegistered(
   cache: KVNamespace,
   botToken: string,
-  apiBase?: string,
 ): Promise<void> {
   const stored = await cache.get(KV_KEY);
   if (stored === COMMANDS_VERSION) return;
 
-  const result = await registerTelegramCommands(botToken, apiBase);
+  const result = await registerTelegramCommands(botToken);
   if (result.ok) {
     // Cache for 30 days — re-registers after deploy if commands changed
     await cache.put(KV_KEY, COMMANDS_VERSION, { expirationTtl: 60 * 60 * 24 * 30 });
@@ -78,9 +76,8 @@ export interface WebhookInfo {
  */
 export async function getTelegramWebhookInfo(
   botToken: string,
-  apiBase?: string,
 ): Promise<{ ok: boolean; result: WebhookInfo }> {
-  const base = (apiBase ?? DEFAULT_TELEGRAM_API) + '/bot';
+  const base = DEFAULT_TELEGRAM_API + '/bot';
   const response = await fetch(`${base}${botToken}/getWebhookInfo`);
   return (await response.json()) as { ok: boolean; result: WebhookInfo };
 }
@@ -93,9 +90,8 @@ export async function setTelegramWebhook(
   workerOrigin: string,
   botToken: string,
   webhookSecret: string,
-  apiBase?: string,
 ): Promise<{ ok: boolean; description?: string }> {
-  const base = (apiBase ?? DEFAULT_TELEGRAM_API) + '/bot';
+  const base = DEFAULT_TELEGRAM_API + '/bot';
   const webhookUrl = `${workerOrigin}/webhook/telegram`;
 
   const response = await fetch(`${base}${botToken}/setWebhook`, {
@@ -120,11 +116,10 @@ export async function setupTelegram(
   workerOrigin: string,
   botToken: string,
   webhookSecret: string,
-  apiBase?: string,
 ): Promise<{ webhook: { ok: boolean; description?: string }; commands: { ok: boolean; description?: string } }> {
   const [webhook, commands] = await Promise.all([
-    setTelegramWebhook(workerOrigin, botToken, webhookSecret, apiBase),
-    registerTelegramCommands(botToken, apiBase),
+    setTelegramWebhook(workerOrigin, botToken, webhookSecret),
+    registerTelegramCommands(botToken),
   ]);
   return { webhook, commands };
 }

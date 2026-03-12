@@ -3,6 +3,7 @@ import type { MCPServer, MCPServerInput } from './types.ts';
 import { getMCPServer, invalidateMCPCache } from './loader.ts';
 import { discoverMCPTools } from './client.ts';
 import { encrypt } from '../security/encryption.ts';
+import { ensureEncryptionKey } from '../security/bootstrap.ts';
 
 /**
  * Register an MCP server: validate, upsert to D1, invalidate cache,
@@ -100,7 +101,7 @@ export async function updateMCPServerHeaders(
   headers: Record<string, string>,
 ): Promise<void> {
   for (const [key, value] of Object.entries(headers)) {
-    const encrypted = await encrypt(value, env.ENCRYPTION_KEY);
+    const encrypted = await encrypt(value, await ensureEncryptionKey(env.CACHE));
     await env.DB.prepare(
       `INSERT INTO mcp_server_headers (server_name, key, encrypted_value)
        VALUES (?, ?, ?)

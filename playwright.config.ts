@@ -6,12 +6,9 @@ const BASE_URL = 'http://localhost:8787';
 // startup — webServer launches BEFORE globalSetup, so .dev.vars cannot be
 // relied on (it would not exist yet when wrangler reads it).
 const WRANGLER_VARS = [
-  'ADMIN_AUTH_TOKEN:test-admin-token-000',
-  'ENCRYPTION_KEY:0000000000000000000000000000000000000000000000000000000000000000',
-  'TELEGRAM_BOT_TOKEN:test_bot_token',
-  'TELEGRAM_WEBHOOK_SECRET:test-webhook-secret',
   'MOCK_AI_RESPONSE:mock-ai-response',
   'TELEGRAM_API_BASE:http://localhost:9999',
+  'TELEGRAM_OWNER_USERNAME:testowner',
 ].map((v) => `--var ${v}`).join(' ');
 
 export default defineConfig({
